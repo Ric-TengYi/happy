@@ -36,9 +36,13 @@ import {
 } from '../services/HappyRealtimeSync';
 import {
   HappyMessage,
+  SendSessionMessageResult,
   SessionMessagesSnapshot,
+  createLocalMessageId,
+  createOptimisticUserMessage,
   getMessageRoleLabel,
   loadSessionMessages,
+  sendSessionTextMessage,
 } from '../services/HappyMessages';
 
 const TAB_INBOX: string = 'inbox';
@@ -74,13 +78,21 @@ struct Index {
   @State private selectedSessionId: string = '';
   @State private messages: HappyMessage[] = [];
   @State private messageStatus: string = '';
+  @State private messageDraft: string = '';
+  @State private messageSendStatus: string = '';
   @State private isMessagesLoading: boolean = false;
+  @State private isMessageSending: boolean = false;
   @State private hasQueuedMessageRefresh: boolean = false;
   @State private messageGeneration: number = 0;
   private realtimeSync: HappyRealtimeSync = new HappyRealtimeSync();
   private isPageActive: boolean = false;
   private loadStateGeneration: number = 0;
   private realtimeGeneration: number = 0;
+  private messageSendGeneration: number = 0;
+  private pendingMessages: HappyMessage[] = [];
+  private retryMessageLocalId: string = '';
+  private retryMessageText: string = '';
+  private retryMessageCreatedAt: number = 0;
 
   aboutToAppear(): void {
     this.isPageActive = true;
@@ -91,8 +103,12 @@ struct Index {
     this.isPageActive = false;
     this.loadStateGeneration += 1;
     this.messageGeneration += 1;
+    this.messageSendGeneration += 1;
     this.hasQueuedMessageRefresh = false;
     this.isMessagesLoading = false;
+    this.isMessageSending = false;
+    this.pendingMessages = [];
+    this.clearRetryMessage();
     this.stopRealtimeSync('实时同步未连接');
   }
 
@@ -604,6 +620,38 @@ struct Index {
           this.MessageRow(message)
         }, (message: HappyMessage) => message.id)
       }
+
+      Column({ space: 10 }) {
+        TextArea({ text: this.messageDraft, placeholder: '输入消息' })
+          .width('100%')
+          .height(92)
+          .backgroundColor('#F7F8FA')
+          .onChange((value: string) => {
+            this.messageDraft = value;
+            if (this.retryMessageText.length > 0 && value.trim() !== this.retryMessageText) {
+              this.clearRetryMessage();
+            }
+          })
+
+        Row({ space: 10 }) {
+          Text(this.messageSendStatus.length > 0 ? this.messageSendStatus : ' ')
+            .fontSize(12)
+            .fontColor('#5F6368')
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+          Button(this.isMessageSending ? '发送中' : '发送')
+            .width(76)
+            .height(36)
+            .enabled(this.canSendMessage())
+            .onClick(() => {
+              this.sendSelectedSessionMessage();
+            })
+        }
+        .width('100%')
+      }
+      .width('100%')
     }
     .width('100%')
     .padding(18)
@@ -1401,16 +1449,28 @@ struct Index {
     this.selectedSessionId = sessionId;
     this.messages = [];
     this.messageStatus = '正在读取消息...';
+    this.messageDraft = '';
+    this.messageSendStatus = '';
+    this.isMessageSending = false;
+    this.messageSendGeneration += 1;
+    this.pendingMessages = [];
+    this.clearRetryMessage();
     this.refreshSelectedSessionMessages();
   }
 
   private closeSessionDetail(): void {
     this.messageGeneration += 1;
+    this.messageSendGeneration += 1;
     this.hasQueuedMessageRefresh = false;
     this.selectedSessionId = '';
     this.messages = [];
     this.messageStatus = '';
+    this.messageDraft = '';
+    this.messageSendStatus = '';
     this.isMessagesLoading = false;
+    this.isMessageSending = false;
+    this.pendingMessages = [];
+    this.clearRetryMessage();
   }
 
   private refreshSelectedSessionMessages(): void {
@@ -1441,7 +1501,7 @@ struct Index {
       if (!this.isCurrentMessageLoad(generation, session.id)) {
         return;
       }
-      this.messages = snapshot.messages;
+      this.messages = this.mergePendingMessages(snapshot.messages);
       this.messageStatus = snapshot.decodeWarningCount > 0
         ? `消息读取完成，${snapshot.decodeWarningCount} 条解密失败`
         : `消息读取完成，${snapshot.messages.length} 条`;
@@ -1463,6 +1523,153 @@ struct Index {
 
   private isCurrentMessageLoad(generation: number, sessionId: string): boolean {
     return this.isPageActive && this.isAuthenticated && generation === this.messageGeneration && this.selectedSessionId === sessionId;
+  }
+
+  private canSendMessage(): boolean {
+    return this.isAuthenticated
+      && !this.isMessageSending
+      && this.selectedSessionId.length > 0
+      && this.messageDraft.trim().length > 0;
+  }
+
+  private sendSelectedSessionMessage(): void {
+    if (!this.canSendMessage()) {
+      if (this.messageDraft.trim().length === 0) {
+        this.messageSendStatus = '请输入消息内容';
+      }
+      return;
+    }
+    const session = this.getSelectedSession();
+    if (!session) {
+      this.messageSendStatus = '该会话已不存在';
+      return;
+    }
+
+    const text = this.messageDraft.trim();
+    const retryLocalId = this.retryMessageText === text ? this.retryMessageLocalId : '';
+    const localId = retryLocalId.length > 0 ? retryLocalId : createLocalMessageId();
+    const createdAt = retryLocalId.length > 0 ? this.retryMessageCreatedAt : Date.now();
+    this.clearRetryMessage();
+    const optimistic = createOptimisticUserMessage(localId, text, createdAt);
+    const messages = this.messages.slice();
+    messages.push(optimistic);
+    this.messages = messages;
+    this.addPendingMessage(optimistic);
+    this.messageDraft = '';
+    this.messageSendStatus = '正在发送...';
+    this.isMessageSending = true;
+    const sendGeneration = this.messageSendGeneration + 1;
+    this.messageSendGeneration = sendGeneration;
+    this.sendSelectedSessionMessageAsync(sendGeneration, session, text, localId, createdAt);
+  }
+
+  private async sendSelectedSessionMessageAsync(
+    sendGeneration: number,
+    session: HappySession,
+    text: string,
+    localId: string,
+    createdAt: number,
+  ): Promise<void> {
+    try {
+      const result: SendSessionMessageResult = await sendSessionTextMessage(
+        this.getAbilityContext(),
+        this.serverUrl,
+        session,
+        text,
+        localId,
+        createdAt,
+      );
+      if (!this.isCurrentMessageSend(sendGeneration, session.id)) {
+        return;
+      }
+      this.messageSendStatus = result.responseMessages.length > 0 ? '发送成功，正在同步...' : '发送成功';
+      this.refreshSelectedSessionMessages();
+    } catch (error) {
+      if (!this.isCurrentMessageSend(sendGeneration, session.id)) {
+        return;
+      }
+      console.error(`发送会话消息失败：${error}`);
+      this.removePendingMessage(localId);
+      this.removeMessageByLocalId(localId);
+      this.retryMessageLocalId = localId;
+      this.retryMessageText = text;
+      this.retryMessageCreatedAt = createdAt;
+      if (this.messageDraft.trim().length === 0) {
+        this.messageDraft = text;
+      }
+      this.messageSendStatus = `发送失败：${this.toUserError(error, '请检查服务器、网络和登录状态')}`;
+    } finally {
+      if (this.isCurrentMessageSend(sendGeneration, session.id)) {
+        this.isMessageSending = false;
+      }
+    }
+  }
+
+  private isCurrentMessageSend(sendGeneration: number, sessionId: string): boolean {
+    return this.isPageActive
+      && this.isAuthenticated
+      && this.selectedSessionId === sessionId
+      && this.messageSendGeneration === sendGeneration;
+  }
+
+  private addPendingMessage(message: HappyMessage): void {
+    const pending = this.pendingMessages.slice();
+    pending.push(message);
+    this.pendingMessages = pending;
+  }
+
+  private clearRetryMessage(): void {
+    this.retryMessageLocalId = '';
+    this.retryMessageText = '';
+    this.retryMessageCreatedAt = 0;
+  }
+
+  private removePendingMessage(localId: string): void {
+    const pending: HappyMessage[] = [];
+    for (const message of this.pendingMessages) {
+      if (message.localId !== localId && message.id !== localId) {
+        pending.push(message);
+      }
+    }
+    this.pendingMessages = pending;
+  }
+
+  private removeMessageByLocalId(localId: string): void {
+    const messages: HappyMessage[] = [];
+    for (const message of this.messages) {
+      if (message.localId !== localId && message.id !== localId) {
+        messages.push(message);
+      }
+    }
+    this.messages = messages;
+  }
+
+  private mergePendingMessages(serverMessages: HappyMessage[]): HappyMessage[] {
+    if (this.pendingMessages.length === 0) {
+      return serverMessages;
+    }
+    const merged = serverMessages.slice();
+    const stillPending: HappyMessage[] = [];
+    for (const pending of this.pendingMessages) {
+      if (!this.hasMessageIdentity(serverMessages, pending)) {
+        merged.push(pending);
+        stillPending.push(pending);
+      }
+    }
+    this.pendingMessages = stillPending;
+    return merged;
+  }
+
+  private hasMessageIdentity(messages: HappyMessage[], target: HappyMessage): boolean {
+    for (const message of messages) {
+      if (target.localId && message.localId === target.localId) {
+        return true;
+      }
+      if (message.id === target.id) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private getSelectedSession(): HappySession | null {

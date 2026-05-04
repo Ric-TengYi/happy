@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_APPEND_SYSTEM_PROMPT,
+  createOptimisticUserMessage,
   createSessionMessagesClient,
   formatMessagePreview,
+  type RawUserTextRecord,
   type SessionMessageDecodeRequest,
   type SessionMessagesCredentials,
 } from './sessionMessages';
@@ -371,5 +374,185 @@ describe('session messages client', () => {
     expect(snapshot.messages).toEqual([
       expect.objectContaining({ id: 'msg-3', role: 'user', text: '能正常显示' }),
     ]);
+  });
+
+  it('sends an Android-compatible encrypted user text record with localId idempotency', async () => {
+    const encryptedRecords: Array<{ record: RawUserTextRecord; dataEncryptionKey: string | null }> = [];
+    const posts: Array<{ url: string; headers: Record<string, string>; body: unknown }> = [];
+    const client = createSessionMessagesClient({
+      getServerUrl: () => 'https://happy.example.com/',
+      getHappyClientId: () => 'harmony/0.1.0',
+      getJson: async <T>(): Promise<T> => {
+        throw new Error('GET should not be used while sending');
+      },
+      decodeMessage: async () => null,
+      encryptMessage: async (request) => {
+        encryptedRecords.push({
+          record: request.record,
+          dataEncryptionKey: request.dataEncryptionKey,
+        });
+        return 'encrypted-user-record';
+      },
+      postJson: async <T>(url: string, headers: Record<string, string>, body: unknown): Promise<T> => {
+        posts.push({ url, headers, body });
+        return {
+          messages: [
+            {
+              id: 'server-msg-1',
+              seq: 12,
+              localId: 'local-123',
+              createdAt: 3000,
+              updatedAt: 3001,
+            },
+          ],
+        } as T;
+      },
+      createLocalId: () => 'local-123',
+      now: () => 2500,
+    });
+
+    const result = await client.sendMessage({
+      sessionId: 'session/1',
+      dataEncryptionKey: 'session-data-key',
+      credentials,
+      text: '继续实现模块 6',
+      permissionMode: 'default',
+      model: null,
+      appendSystemPrompt: '# Options',
+    });
+
+    expect(encryptedRecords).toEqual([
+      {
+        dataEncryptionKey: 'session-data-key',
+        record: {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: '继续实现模块 6',
+          },
+          meta: {
+            sentFrom: 'harmony',
+            permissionMode: 'default',
+            model: null,
+            fallbackModel: null,
+            appendSystemPrompt: '# Options',
+          },
+        },
+      },
+    ]);
+    expect(posts).toEqual([
+      {
+        url: 'https://happy.example.com/v3/sessions/session%2F1/messages',
+        headers: {
+          Authorization: 'Bearer happy-token',
+          'Content-Type': 'application/json',
+          'X-Happy-Client': 'harmony/0.1.0',
+        },
+        body: {
+          messages: [
+            {
+              localId: 'local-123',
+              content: 'encrypted-user-record',
+            },
+          ],
+        },
+      },
+    ]);
+    expect(result.localMessage).toEqual({
+      id: 'local-123',
+      localId: 'local-123',
+      seq: 0,
+      createdAt: 2500,
+      role: 'user',
+      kind: 'text',
+      text: '继续实现模块 6',
+    });
+    expect(result.responseMessages).toEqual([
+      {
+        id: 'server-msg-1',
+        seq: 12,
+        localId: 'local-123',
+        createdAt: 3000,
+        updatedAt: 3001,
+      },
+    ]);
+  });
+
+  it('rejects empty send text before encryption or POST', async () => {
+    let encrypted = false;
+    let posted = false;
+    const client = createSessionMessagesClient({
+      getServerUrl: () => 'https://happy.example.com',
+      getHappyClientId: () => 'harmony/0.1.0',
+      getJson: async <T>(): Promise<T> => ({} as T),
+      decodeMessage: async () => null,
+      encryptMessage: async () => {
+        encrypted = true;
+        return 'encrypted';
+      },
+      postJson: async <T>(): Promise<T> => {
+        posted = true;
+        return {} as T;
+      },
+    });
+
+    await expect(client.sendMessage({
+      sessionId: 'session-1',
+      dataEncryptionKey: null,
+      credentials,
+      text: '   ',
+    })).rejects.toThrow('Message text is empty');
+    expect(encrypted).toBe(false);
+    expect(posted).toBe(false);
+  });
+
+  it('uses the Android append system prompt by default when sending', async () => {
+    const encryptedRecords: RawUserTextRecord[] = [];
+    const client = createSessionMessagesClient({
+      getServerUrl: () => 'https://happy.example.com',
+      getHappyClientId: () => 'harmony/0.1.0',
+      getJson: async <T>(): Promise<T> => ({} as T),
+      decodeMessage: async () => null,
+      encryptMessage: async (request) => {
+        encryptedRecords.push(request.record);
+        return 'encrypted';
+      },
+      postJson: async <T>(): Promise<T> => ({
+        messages: [{
+          id: 'server-msg-1',
+          seq: 1,
+          localId: 'local-1',
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      } as T),
+      createLocalId: () => 'local-1',
+      now: () => 1,
+    });
+
+    await client.sendMessage({
+      sessionId: 'session-1',
+      dataEncryptionKey: null,
+      credentials,
+      text: '默认提示',
+    });
+
+    expect(encryptedRecords[0]?.meta.appendSystemPrompt).toBe(DEFAULT_APPEND_SYSTEM_PROMPT);
+  });
+
+  it('creates an optimistic local user message with the localId as its stable id', () => {
+    expect(createOptimisticUserMessage({
+      localId: 'local-1',
+      text: '本地先显示',
+      createdAt: 4000,
+    })).toEqual({
+      id: 'local-1',
+      localId: 'local-1',
+      seq: 0,
+      createdAt: 4000,
+      role: 'user',
+      kind: 'text',
+      text: '本地先显示',
+    });
   });
 });

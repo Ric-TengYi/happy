@@ -45,6 +45,12 @@ export function decryptSecretBox(bundle: Uint8Array, secretKey: Uint8Array): Uin
   return secretBoxOpenEasy(ciphertext, nonce, secretKey);
 }
 
+export function encryptSecretBox(message: Uint8Array, secretKey: Uint8Array): Uint8Array {
+  assertLength(secretKey, BOX_KEY_LENGTH, '记录密钥');
+  const nonce = randomBytes(BOX_NONCE_LENGTH);
+  return concatBytes(nonce, secretBoxEasy(message, nonce, secretKey));
+}
+
 function encryptBoxWithSecretKey(
   message: Uint8Array,
   recipientPublicKey: Uint8Array,

@@ -3,6 +3,23 @@ export interface SessionMessagesCredentials {
   secretBase64Url: string;
 }
 
+export const DEFAULT_APPEND_SYSTEM_PROMPT = `# Options
+
+You have a way to give a user a easy way to answer your questions if you know possible answers. To provide this, you need to output in your final response an XML:
+
+<options>
+    <option>Option 1</option>
+    ...
+    <option>Option N</option>
+</options>
+
+You must output this in the very end of your response, not inside of any other text. Do not wrap it into a codeblock. Always dedicate "<options>" and "</options>" to a dedicated line. Never output anything like "custom", user always have an option to send a custom message. Do not enumerate options in both text and options block.
+Always prefer to use the options mode to the text mode. Try to keep options minimal, better to clarify in a next steps.
+
+# Plan mode with options
+
+When you are in the plan mode, you must use the options mode to give the user a easy way to answer your questions if you know possible answers. Do not assume what is needed, when there is discrepancy between what you need and what you have, you must use the options mode.`;
+
 export interface SessionMessageDecodeRequest {
   encrypted: string;
   dataEncryptionKey: string | null;
@@ -49,6 +66,61 @@ export interface SessionMessagesSnapshot {
   decodeWarningCount: number;
 }
 
+export interface RawUserTextRecord {
+  role: 'user';
+  content: {
+    type: 'text';
+    text: string;
+  };
+  meta: {
+    sentFrom: 'harmony';
+    permissionMode: string;
+    model: string | null;
+    fallbackModel: null;
+    appendSystemPrompt: string;
+    displayText?: string;
+  };
+}
+
+export interface SessionMessageEncryptRequest {
+  record: RawUserTextRecord;
+  dataEncryptionKey: string | null;
+  credentials: SessionMessagesCredentials;
+}
+
+export type SessionMessageEncryptor = (
+  request: SessionMessageEncryptRequest,
+) => Promise<string>;
+
+export interface SentSessionMessage {
+  id: string;
+  seq: number;
+  localId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SendSessionMessagesResponse {
+  messages?: SentSessionMessage[];
+}
+
+export interface SendSessionMessageInput {
+  sessionId: string;
+  dataEncryptionKey: string | null;
+  credentials: SessionMessagesCredentials;
+  text: string;
+  permissionMode?: string;
+  model?: string | null;
+  appendSystemPrompt?: string;
+  displayText?: string;
+}
+
+export interface SendSessionMessageResult {
+  localId: string;
+  localMessage: SessionMessage;
+  responseMessages: SentSessionMessage[];
+}
+
 export interface FetchSessionMessagesInput {
   sessionId: string;
   dataEncryptionKey: string | null;
@@ -59,6 +131,7 @@ export interface FetchSessionMessagesInput {
 
 export interface SessionMessagesClient {
   fetchMessages(input: FetchSessionMessagesInput): Promise<SessionMessagesSnapshot>;
+  sendMessage(input: SendSessionMessageInput): Promise<SendSessionMessageResult>;
 }
 
 export interface SessionMessagesClientDependencies {
@@ -66,6 +139,10 @@ export interface SessionMessagesClientDependencies {
   getHappyClientId(): string;
   getJson<T>(url: string, headers: Record<string, string>): Promise<T>;
   decodeMessage: SessionMessageDecoder;
+  postJson?<T>(url: string, headers: Record<string, string>, body: unknown): Promise<T>;
+  encryptMessage?: SessionMessageEncryptor;
+  createLocalId?(): string;
+  now?(): number;
 }
 
 interface MessageBase {
@@ -142,6 +219,101 @@ export function createSessionMessagesClient(dependencies: SessionMessagesClientD
         decodeWarningCount,
       };
     },
+
+    async sendMessage(input) {
+      if (input.credentials.token.length === 0) {
+        throw new Error('Auth token is empty');
+      }
+      if (input.sessionId.trim().length === 0) {
+        throw new Error('Session id is empty');
+      }
+      const text = input.text.trim();
+      if (text.length === 0) {
+        throw new Error('Message text is empty');
+      }
+      if (!dependencies.encryptMessage) {
+        throw new Error('Session message encryptor is not configured');
+      }
+      if (!dependencies.postJson) {
+        throw new Error('Session message POST transport is not configured');
+      }
+
+      const localId = dependencies.createLocalId ? dependencies.createLocalId() : randomLocalId();
+      const createdAt = dependencies.now ? dependencies.now() : Date.now();
+      const record = buildRawUserTextRecord({
+        text,
+        permissionMode: input.permissionMode ?? 'default',
+        model: input.model ?? null,
+        appendSystemPrompt: input.appendSystemPrompt ?? DEFAULT_APPEND_SYSTEM_PROMPT,
+        displayText: input.displayText,
+      });
+      const encrypted = await dependencies.encryptMessage({
+        record,
+        dataEncryptionKey: input.dataEncryptionKey,
+        credentials: input.credentials,
+      });
+
+      const serverUrl = trimTrailingSlashes(dependencies.getServerUrl());
+      const response = parseSendMessagesResponse(await dependencies.postJson<unknown>(
+        `${serverUrl}/v3/sessions/${encodeURIComponent(input.sessionId)}/messages`,
+        authHeaders(input.credentials.token, dependencies.getHappyClientId()),
+        {
+          messages: [{
+            localId,
+            content: encrypted,
+          }],
+        },
+      ));
+
+      return {
+        localId,
+        localMessage: createOptimisticUserMessage({ localId, text, createdAt }),
+        responseMessages: response.messages,
+      };
+    },
+  };
+}
+
+export function buildRawUserTextRecord(input: {
+  text: string;
+  permissionMode?: string;
+  model?: string | null;
+  appendSystemPrompt?: string;
+  displayText?: string;
+}): RawUserTextRecord {
+  const meta: RawUserTextRecord['meta'] = {
+    sentFrom: 'harmony',
+    permissionMode: input.permissionMode ?? 'default',
+    model: input.model ?? null,
+    fallbackModel: null,
+    appendSystemPrompt: input.appendSystemPrompt ?? DEFAULT_APPEND_SYSTEM_PROMPT,
+  };
+  if (input.displayText && input.displayText.length > 0) {
+    meta.displayText = input.displayText;
+  }
+  return {
+    role: 'user',
+    content: {
+      type: 'text',
+      text: input.text,
+    },
+    meta,
+  };
+}
+
+export function createOptimisticUserMessage(input: {
+  localId: string;
+  text: string;
+  createdAt: number;
+}): SessionMessage {
+  return {
+    id: input.localId,
+    localId: input.localId,
+    seq: 0,
+    createdAt: input.createdAt,
+    role: 'user',
+    kind: 'text',
+    text: input.text,
   };
 }
 
@@ -439,6 +611,15 @@ function parseMessagesResponse(value: unknown): Required<ApiSessionMessagesRespo
   };
 }
 
+function parseSendMessagesResponse(value: unknown): Required<SendSessionMessagesResponse> {
+  if (!isRecord(value) || !Array.isArray(value.messages)) {
+    throw new Error('Send messages response has an invalid shape');
+  }
+  return {
+    messages: value.messages as SentSessionMessage[],
+  };
+}
+
 function authHeaders(token: string, happyClient: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -475,4 +656,8 @@ function truncate(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function randomLocalId(): string {
+  return `local-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }

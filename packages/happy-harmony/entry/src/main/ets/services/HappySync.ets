@@ -83,6 +83,10 @@ export interface SessionSummary {
   updatedAt: number;
 }
 
+export interface SessionSandboxMetadata {
+  enabled?: boolean;
+}
+
 export interface SessionMetadata {
   path?: string;
   host?: string;
@@ -92,6 +96,8 @@ export interface SessionMetadata {
   machineId?: string;
   homeDir?: string;
   flavor?: string | null;
+  sandbox?: SessionSandboxMetadata | null;
+  currentOperatingModeCode?: string;
   summary?: SessionSummary;
 }
 
@@ -123,6 +129,8 @@ export interface HappySession {
   agentState: Object | null;
   agentStateVersion: number;
   dataEncryptionKey: string | null;
+  permissionMode?: string | null;
+  modelMode?: string | null;
 }
 
 export interface ControlPlaneSnapshot {

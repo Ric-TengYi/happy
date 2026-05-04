@@ -4,7 +4,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { http } from '@kit.NetworkKit';
 import { Credentials, loadCredentials } from './HappyAuth';
 import { HappySession } from './HappySync';
-import { decryptBoxBundle, decryptSecretBox, deriveContentSecretKey } from './HappyBox';
+import { decryptBoxBundle, decryptSecretBox, deriveContentSecretKey, encryptSecretBox } from './HappyBox';
 
 const HAPPY_CLIENT_ID: string = 'harmony/0.1.0';
 const BASE64_ALPHABET: string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -15,6 +15,22 @@ const AES_GCM_NONCE_LENGTH: number = 12;
 const AES_GCM_AUTH_TAG_LENGTH: number = 16;
 const PAGE_LIMIT: number = 100;
 const TOOL_OUTPUT_MAX_LENGTH: number = 240;
+const APPEND_SYSTEM_PROMPT: string = `# Options
+
+You have a way to give a user a easy way to answer your questions if you know possible answers. To provide this, you need to output in your final response an XML:
+
+<options>
+    <option>Option 1</option>
+    ...
+    <option>Option N</option>
+</options>
+
+You must output this in the very end of your response, not inside of any other text. Do not wrap it into a codeblock. Always dedicate "<options>" and "</options>" to a dedicated line. Never output anything like "custom", user always have an option to send a custom message. Do not enumerate options in both text and options block.
+Always prefer to use the options mode to the text mode. Try to keep options minimal, better to clarify in a next steps.
+
+# Plan mode with options
+
+When you are in the plan mode, you must use the options mode to give the user a easy way to answer your questions if you know possible answers. Do not assume what is needed, when there is discrepancy between what you need and what you have, you must use the options mode.`;
 
 interface AuthHeaders {
   'Authorization': string;
@@ -31,6 +47,18 @@ interface TextResponse {
 interface SessionMessagesWireEnvelope {
   messages?: SessionMessageWire[];
   hasMore?: boolean;
+}
+
+interface SentSessionMessageWire {
+  id: string;
+  seq: number;
+  localId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface SendSessionMessagesWireEnvelope {
+  messages?: SentSessionMessageWire[];
 }
 
 interface SessionMessageWireContent {
@@ -66,6 +94,39 @@ interface MessageBase {
 interface RawRecordWire {
   role?: string;
   content?: Object | Object[] | string;
+}
+
+interface RawUserTextContent {
+  type: string;
+  text: string;
+}
+
+interface RawUserTextMeta {
+  sentFrom: string;
+  permissionMode: string;
+  model: string | null;
+  fallbackModel: string | null;
+  appendSystemPrompt: string;
+}
+
+interface RawUserTextRecord {
+  role: string;
+  content: RawUserTextContent;
+  meta: RawUserTextMeta;
+}
+
+interface MessageModeMeta {
+  permissionMode: string;
+  model: string | null;
+}
+
+interface SendRequestMessage {
+  localId: string;
+  content: string;
+}
+
+interface SendRequestBody {
+  messages: SendRequestMessage[];
 }
 
 interface RawAgentContentWire {
@@ -152,6 +213,20 @@ export interface SessionMessagesSnapshot {
   decodeWarningCount: number;
 }
 
+export interface SentSessionMessage {
+  id: string;
+  seq: number;
+  localId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SendSessionMessageResult {
+  localId: string;
+  optimisticMessage: HappyMessage;
+  responseMessages: SentSessionMessage[];
+}
+
 export async function loadSessionMessages(
   context: common.UIAbilityContext,
   serverUrl: string,
@@ -185,6 +260,8 @@ export async function loadSessionMessages(
   while (hasMore) {
     const response = await requestText(
       `${normalizedServerUrl}/v3/sessions/${encodePathSegment(session.id)}/messages?after_seq=${afterSeq}&limit=${PAGE_LIMIT}`,
+      http.RequestMethod.GET,
+      undefined,
       headers,
     );
     if (!response.ok) {
@@ -222,6 +299,115 @@ export async function loadSessionMessages(
     lastSeq,
     decodeWarningCount: decodeStats.failures,
   };
+}
+
+export async function sendSessionTextMessage(
+  context: common.UIAbilityContext,
+  serverUrl: string,
+  session: HappySession,
+  text: string,
+  localId: string,
+  createdAt: number,
+): Promise<SendSessionMessageResult> {
+  const trimmedText = text.trim();
+  if (trimmedText.length === 0) {
+    throw new Error('请输入消息内容');
+  }
+  if (localId.length === 0) {
+    throw new Error('本地消息 ID 为空');
+  }
+
+  const credentials = await loadCredentials(context);
+  if (!credentials) {
+    throw new Error('请先登录账号');
+  }
+  if (credentials.token.length === 0) {
+    throw new Error('登录 token 为空');
+  }
+
+  const cipher = resolveRecordCipher(session.dataEncryptionKey, credentials);
+  if (!cipher) {
+    throw new Error('会话密钥不可用');
+  }
+
+  const modeMeta = resolveMessageModeMeta(session);
+  const record = buildRawUserTextRecord(trimmedText, modeMeta);
+  const encrypted = encryptRawRecord(record, cipher);
+  const body: SendRequestBody = {
+    messages: [{
+      localId,
+      content: encrypted,
+    }],
+  };
+  const headers: AuthHeaders = {
+    'Authorization': `Bearer ${credentials.token}`,
+    'Content-Type': 'application/json',
+    'X-Happy-Client': HAPPY_CLIENT_ID,
+  };
+  const response = await requestText(
+    `${normalizeServerUrl(serverUrl)}/v3/sessions/${encodePathSegment(session.id)}/messages`,
+    http.RequestMethod.POST,
+    JSON.stringify(body),
+    headers,
+  );
+  if (!response.ok) {
+    throw new Error(`发送消息失败：${response.statusCode}`);
+  }
+
+  return {
+    localId,
+    optimisticMessage: createOptimisticUserMessage(localId, trimmedText, createdAt),
+    responseMessages: parseSendMessagesResponse(response.text),
+  };
+}
+
+export function createOptimisticUserMessage(localId: string, text: string, createdAt: number): HappyMessage {
+  return makeMessage({
+    id: localId,
+    localId,
+    seq: 0,
+    createdAt,
+  }, 0, 'user', 'text', text, '', '', false);
+}
+
+export function createLocalMessageId(): string {
+  const bytes = randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return `${hexBytes(bytes, 0, 4)}-${hexBytes(bytes, 4, 6)}-${hexBytes(bytes, 6, 8)}-${hexBytes(bytes, 8, 10)}-${hexBytes(bytes, 10, 16)}`;
+}
+
+function buildRawUserTextRecord(text: string, modeMeta: MessageModeMeta): RawUserTextRecord {
+  return {
+    role: 'user',
+    content: {
+      type: 'text',
+      text,
+    },
+    meta: {
+      sentFrom: 'harmony',
+      permissionMode: modeMeta.permissionMode,
+      model: modeMeta.model,
+      fallbackModel: null,
+      appendSystemPrompt: APPEND_SYSTEM_PROMPT,
+    },
+  };
+}
+
+function resolveMessageModeMeta(session: HappySession): MessageModeMeta {
+  const explicitPermissionMode = normalizeOptionalText(session.permissionMode);
+  const permissionMode = explicitPermissionMode.length > 0 && explicitPermissionMode !== 'default'
+    ? explicitPermissionMode
+    : (isSessionSandboxEnabled(session) ? 'bypassPermissions' : 'default');
+  const modelMode = normalizeOptionalText(session.modelMode);
+  return {
+    permissionMode,
+    model: modelMode.length > 0 && modelMode !== 'default' ? modelMode : null,
+  };
+}
+
+function isSessionSandboxEnabled(session: HappySession): boolean {
+  return session.metadata?.sandbox?.enabled === true;
 }
 
 export function getMessageRoleLabel(message: HappyMessage): string {
@@ -266,6 +452,12 @@ function decryptMessageContent(content: SessionMessageWireContent, cipher: Recor
     decodeStats.failures += 1;
     return null;
   }
+}
+
+function encryptRawRecord(record: RawUserTextRecord, cipher: RecordCipher): string {
+  const plain = utf8StringToBytes(JSON.stringify(record));
+  const encrypted = cipher.isDataKey ? encryptAesGcm(plain, cipher.key) : encryptSecretBox(plain, cipher.key);
+  return encodeBase64(encrypted);
 }
 
 function normalizeRawMessage(base: MessageBase, raw: Object): HappyMessage[] {
@@ -675,6 +867,40 @@ function decryptAesGcm(bundle: Uint8Array, keyBytes: Uint8Array): Uint8Array | n
   }
 }
 
+function encryptAesGcm(plain: Uint8Array, keyBytes: Uint8Array): Uint8Array {
+  const nonce = randomBytes(AES_GCM_NONCE_LENGTH);
+  const key = cryptoFramework.createSymKeyGenerator('AES256').convertKeySync({ data: keyBytes });
+  const cipher = cryptoFramework.createCipher('AES256|GCM|PKCS7');
+  const params: cryptoFramework.GcmParamsSpec = {
+    iv: { data: nonce },
+    aad: { data: new Uint8Array() },
+    authTag: { data: new Uint8Array() },
+    algName: 'GcmParamsSpec',
+  };
+  cipher.initSync(cryptoFramework.CryptoMode.ENCRYPT_MODE, key, params);
+  const encrypted = cipher.doFinalSync({ data: plain }).data;
+  const directBundle = buildAesGcmBundle(nonce, encrypted);
+  if (decryptAesGcm(directBundle, keyBytes)) {
+    return directBundle;
+  }
+  if (params.authTag.data.length > 0) {
+    const combined = concatBytes(encrypted, params.authTag.data);
+    const taggedBundle = buildAesGcmBundle(nonce, combined);
+    if (decryptAesGcm(taggedBundle, keyBytes)) {
+      return taggedBundle;
+    }
+  }
+  throw new Error('AES-GCM 加密结果校验失败');
+}
+
+function buildAesGcmBundle(nonce: Uint8Array, encryptedWithTag: Uint8Array): Uint8Array {
+  const bundle = new Uint8Array(1 + nonce.length + encryptedWithTag.length);
+  bundle[0] = AES_GCM_VERSION;
+  bundle.set(nonce, 1);
+  bundle.set(encryptedWithTag, 1 + nonce.length);
+  return bundle;
+}
+
 function parseMessagesResponse(text: string): Required<SessionMessagesWireEnvelope> {
   const parsed = JSON.parse(text) as SessionMessagesWireEnvelope;
   if (!parsed.messages || !Array.isArray(parsed.messages)) {
@@ -686,11 +912,33 @@ function parseMessagesResponse(text: string): Required<SessionMessagesWireEnvelo
   };
 }
 
-async function requestText(url: string, headers: Object): Promise<TextResponse> {
+function parseSendMessagesResponse(text: string): SentSessionMessage[] {
+  const parsed = JSON.parse(text) as SendSessionMessagesWireEnvelope;
+  if (!parsed.messages || !Array.isArray(parsed.messages)) {
+    throw new Error('发送消息响应格式不正确');
+  }
+  return parsed.messages.map((message: SentSessionMessageWire): SentSessionMessage => {
+    return {
+      id: message.id,
+      seq: message.seq,
+      localId: message.localId ?? null,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+    };
+  });
+}
+
+async function requestText(
+  url: string,
+  method: http.RequestMethod,
+  body: string | undefined,
+  headers: Object,
+): Promise<TextResponse> {
   const request = http.createHttp();
   try {
     const response = await request.request(url, {
-      method: http.RequestMethod.GET,
+      method,
+      extraData: body,
       header: headers,
       expectDataType: http.HttpDataType.STRING,
       connectTimeout: 8000,
@@ -724,6 +972,32 @@ function normalizeServerUrl(url: string): string {
   return normalized;
 }
 
+function randomBytes(length: number): Uint8Array {
+  return cryptoFramework.createRandom().generateRandomSync(length).data;
+}
+
+function concatBytes(...chunks: Uint8Array[]): Uint8Array {
+  let length = 0;
+  for (const chunk of chunks) {
+    length += chunk.length;
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
+function hexBytes(bytes: Uint8Array, start: number, end: number): string {
+  let value = '';
+  for (let index = start; index < end; index += 1) {
+    value += bytes[index].toString(16).padStart(2, '0');
+  }
+  return value;
+}
+
 function encodePathSegment(value: string): string {
   return encodeURIComponent(value);
 }
@@ -734,6 +1008,30 @@ function normalizeOptionalText(value: string | undefined | null): string {
 
 function bytesToUtf8String(bytes: Uint8Array): string {
   return buffer.from(bytes).toString('utf8');
+}
+
+function utf8StringToBytes(value: string): Uint8Array {
+  const encoded = buffer.from(value, 'utf8');
+  const bytes = new Uint8Array(encoded.length);
+  for (let index = 0; index < encoded.length; index += 1) {
+    bytes[index] = encoded[index];
+  }
+  return bytes;
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let result = '';
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index];
+    const second = index + 1 < bytes.length ? bytes[index + 1] : 0;
+    const third = index + 2 < bytes.length ? bytes[index + 2] : 0;
+    const combined = (first << 16) | (second << 8) | third;
+    result += BASE64_ALPHABET[(combined >> 18) & 0x3f];
+    result += BASE64_ALPHABET[(combined >> 12) & 0x3f];
+    result += index + 1 < bytes.length ? BASE64_ALPHABET[(combined >> 6) & 0x3f] : '=';
+    result += index + 2 < bytes.length ? BASE64_ALPHABET[combined & 0x3f] : '=';
+  }
+  return result;
 }
 
 function decodeBase64Url(base64url: string): Uint8Array {
