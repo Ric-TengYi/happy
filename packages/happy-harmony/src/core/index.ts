@@ -5,6 +5,7 @@ export * from './boxEncryption';
 export * from './controlPlaneClient';
 export * from './credentialStore';
 export * from './cryptoLayout';
+export * from './realtimeSync';
 export * from './secretKeyBackup';
 export * from './serverConfigService';
 export * from './storage';

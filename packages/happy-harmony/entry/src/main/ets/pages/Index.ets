@@ -29,6 +29,11 @@ import {
   getSessionTitle,
   loadControlPlaneSnapshot,
 } from '../services/HappySync';
+import {
+  HappyRealtimeSync,
+  MachineActivityEvent,
+  SessionActivityEvent,
+} from '../services/HappyRealtimeSync';
 
 const TAB_INBOX: string = 'inbox';
 const TAB_TERMINAL: string = 'terminal';
@@ -56,12 +61,24 @@ struct Index {
   @State private machines: HappyMachine[] = [];
   @State private sessions: HappySession[] = [];
   @State private syncStatus: string = '同步未开始';
+  @State private realtimeStatus: string = '实时同步未连接';
   @State private isSyncLoading: boolean = false;
   @State private hasQueuedSyncRefresh: boolean = false;
   @State private syncGeneration: number = 0;
+  private realtimeSync: HappyRealtimeSync = new HappyRealtimeSync();
+  private isPageActive: boolean = false;
+  private loadStateGeneration: number = 0;
+  private realtimeGeneration: number = 0;
 
   aboutToAppear(): void {
+    this.isPageActive = true;
     this.loadStateAsync();
+  }
+
+  aboutToDisappear(): void {
+    this.isPageActive = false;
+    this.loadStateGeneration += 1;
+    this.stopRealtimeSync('实时同步未连接');
   }
 
   build() {
@@ -324,6 +341,13 @@ struct Index {
         Text(this.syncStatus)
           .fontSize(13)
           .fontColor('#202124')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(this.realtimeStatus)
+          .fontSize(12)
+          .fontColor('#5F6368')
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
@@ -730,6 +754,8 @@ struct Index {
   }
 
   private async loadStateAsync(): Promise<void> {
+    const generation = this.loadStateGeneration + 1;
+    this.loadStateGeneration = generation;
     this.isLoadingState = true;
     this.hasStateLoadError = false;
     this.accountStatus = '正在读取登录状态...';
@@ -737,10 +763,14 @@ struct Index {
     this.terminalAuthStatus = '';
     this.status = '正在读取登录状态...';
     this.syncStatus = '同步未开始';
+    this.stopRealtimeSync('实时同步未连接');
     try {
       const context = this.getAbilityContext();
       this.serverUrl = getServerUrl(context);
       const credentials = await loadCredentials(context);
+      if (!this.isCurrentLoadState(generation)) {
+        return;
+      }
       if (credentials) {
         this.markAuthenticated(credentials, '已从本机读取登录状态');
         this.backupSecret = formatBackupSecret(credentials.secretBase64Url);
@@ -752,6 +782,9 @@ struct Index {
         this.activeTab = TAB_SETTINGS;
       }
     } catch (error) {
+      if (!this.isCurrentLoadState(generation)) {
+        return;
+      }
       console.error(`读取登录状态失败：${error}`);
       this.isAuthenticated = false;
       this.backupSecret = '';
@@ -762,7 +795,9 @@ struct Index {
       this.status = '读取登录状态失败，请稍后重试';
       this.activeTab = TAB_SETTINGS;
     } finally {
-      this.isLoadingState = false;
+      if (this.isCurrentLoadState(generation)) {
+        this.isLoadingState = false;
+      }
     }
   }
 
@@ -797,6 +832,7 @@ struct Index {
       this.showServerPanel = false;
       this.clearControlPlaneData('服务器已切换，等待重新同步');
       if (this.isAuthenticated) {
+        this.restartRealtimeSync();
         this.refreshControlPlaneData();
       }
     } catch (error) {
@@ -826,6 +862,7 @@ struct Index {
       this.showServerPanel = false;
       this.clearControlPlaneData('服务器已恢复默认，等待重新同步');
       if (this.isAuthenticated) {
+        this.restartRealtimeSync();
         this.refreshControlPlaneData();
       }
     } catch (error) {
@@ -1077,11 +1114,165 @@ struct Index {
     return generation === this.syncGeneration && this.isAuthenticated;
   }
 
+  private isCurrentLoadState(generation: number): boolean {
+    return this.isPageActive && generation === this.loadStateGeneration;
+  }
+
+  private startRealtimeSync(credentials: Credentials): void {
+    if (!this.isPageActive || !this.isAuthenticated) {
+      return;
+    }
+    const url = this.serverUrl.trim();
+    const error = validateServerUrl(url);
+    if (error) {
+      this.realtimeStatus = `实时同步未连接：${error}`;
+      return;
+    }
+    const generation = this.realtimeGeneration + 1;
+    this.realtimeGeneration = generation;
+
+    this.realtimeSync.start(
+      url,
+      credentials,
+      (status: string, message: string): void => {
+        if (!this.isCurrentRealtime(generation)) {
+          return;
+        }
+        this.realtimeStatus = message;
+      },
+      (): void => {
+        if (!this.isCurrentRealtime(generation)) {
+          return;
+        }
+        this.refreshControlPlaneData();
+      },
+      (): void => {
+        if (!this.isCurrentRealtime(generation)) {
+          return;
+        }
+        this.syncStatus = '收到实时更新，正在同步...';
+        this.refreshControlPlaneData();
+      },
+      (event: MachineActivityEvent): void => {
+        if (!this.isCurrentRealtime(generation)) {
+          return;
+        }
+        this.applyMachineActivity(event);
+      },
+      (event: SessionActivityEvent): void => {
+        if (!this.isCurrentRealtime(generation)) {
+          return;
+        }
+        this.applySessionActivity(event);
+      },
+    );
+  }
+
+  private stopRealtimeSync(status: string): void {
+    this.realtimeGeneration += 1;
+    this.realtimeSync.stop();
+    this.realtimeStatus = status;
+  }
+
+  private restartRealtimeSync(): void {
+    this.realtimeGeneration += 1;
+    const generation = this.realtimeGeneration;
+    this.realtimeSync.stop();
+    this.realtimeStatus = '实时同步正在重连...';
+    this.restartRealtimeSyncAsync(generation);
+  }
+
+  private async restartRealtimeSyncAsync(generation: number): Promise<void> {
+    try {
+      const credentials = await loadCredentials(this.getAbilityContext());
+      if (!this.isCurrentRealtime(generation)) {
+        return;
+      }
+      if (credentials) {
+        this.startRealtimeSync(credentials);
+      } else {
+        this.stopRealtimeSync('实时同步未连接');
+      }
+    } catch (error) {
+      console.error(`实时同步重连失败：${error}`);
+      if (this.isCurrentRealtime(generation)) {
+        this.realtimeStatus = '实时同步重连失败';
+      }
+    }
+  }
+
+  private isCurrentRealtime(generation: number): boolean {
+    return this.isPageActive && this.isAuthenticated && generation === this.realtimeGeneration;
+  }
+
+  private applyMachineActivity(event: MachineActivityEvent): void {
+    let found = false;
+    const machines = this.machines.map((machine: HappyMachine): HappyMachine => {
+      if (machine.id !== event.id) {
+        return machine;
+      }
+      found = true;
+      return {
+        id: machine.id,
+        seq: machine.seq,
+        createdAt: machine.createdAt,
+        updatedAt: machine.updatedAt,
+        active: event.active,
+        activeAt: event.activeAt,
+        metadata: machine.metadata,
+        metadataVersion: machine.metadataVersion,
+        daemonState: machine.daemonState,
+        daemonStateVersion: machine.daemonStateVersion,
+        dataEncryptionKey: machine.dataEncryptionKey,
+      };
+    });
+    if (!found) {
+      this.syncStatus = '收到未知终端状态，正在同步...';
+      this.refreshControlPlaneData();
+      return;
+    }
+    this.machines = machines;
+    this.syncStatus = '终端状态已实时更新';
+  }
+
+  private applySessionActivity(event: SessionActivityEvent): void {
+    let found = false;
+    const sessions = this.sessions.map((session: HappySession): HappySession => {
+      if (session.id !== event.id) {
+        return session;
+      }
+      found = true;
+      return {
+        id: session.id,
+        seq: session.seq,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        active: event.active,
+        activeAt: event.activeAt,
+        thinking: event.thinking,
+        thinkingAt: event.activeAt,
+        metadata: session.metadata,
+        metadataVersion: session.metadataVersion,
+        agentState: session.agentState,
+        agentStateVersion: session.agentStateVersion,
+        dataEncryptionKey: session.dataEncryptionKey,
+      };
+    });
+    if (!found) {
+      this.syncStatus = '收到未知会话状态，正在同步...';
+      this.refreshControlPlaneData();
+      return;
+    }
+    this.sessions = sessions;
+    this.syncStatus = event.thinking ? '会话正在思考' : '会话状态已实时更新';
+  }
+
   private markAuthenticated(credentials: Credentials, status: string): void {
     this.isAuthenticated = true;
     this.hasStateLoadError = false;
     this.accountStatus = `已登录：${maskToken(credentials.token)}`;
     this.status = status;
+    this.startRealtimeSync(credentials);
   }
 
   private markUnauthenticated(status: string): void {
@@ -1089,6 +1280,7 @@ struct Index {
     this.hasStateLoadError = false;
     this.accountStatus = '未登录';
     this.status = status;
+    this.stopRealtimeSync('实时同步未连接');
   }
 
   private isBusy(): boolean {

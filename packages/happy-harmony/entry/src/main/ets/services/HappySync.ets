@@ -116,6 +116,8 @@ export interface HappySession {
   updatedAt: number;
   active: boolean;
   activeAt: number;
+  thinking: boolean;
+  thinkingAt: number;
   metadata: SessionMetadata | null;
   metadataVersion: number;
   agentState: Object | null;
@@ -227,6 +229,9 @@ export function getSessionTitle(session: HappySession): string {
 }
 
 export function getSessionSubtitle(session: HappySession): string {
+  if (session.thinking) {
+    return '思考中';
+  }
   const host = normalizeOptionalText(session.metadata?.host);
   const path = normalizeOptionalText(session.metadata?.path);
   if (host.length > 0 && path.length > 0) {
@@ -274,6 +279,8 @@ function decryptSession(row: SessionWire, credentials: Credentials, decodeStats:
     updatedAt: row.updatedAt,
     active: row.active,
     activeAt: row.activeAt,
+    thinking: false,
+    thinkingAt: 0,
     metadata,
     metadataVersion: row.metadataVersion,
     agentState,
