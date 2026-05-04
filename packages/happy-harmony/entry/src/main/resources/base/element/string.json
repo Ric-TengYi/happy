@@ -6,11 +6,15 @@
     },
     {
       "name": "module_desc",
-      "value": "Happy HarmonyOS entry module"
+      "value": "Happy 鸿蒙入口模块"
     },
     {
       "name": "entryability_desc",
-      "value": "Happy HarmonyOS entry ability"
+      "value": "Happy 鸿蒙入口能力"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "用于扫描终端登录二维码"
     }
   ]
 }
