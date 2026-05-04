@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "Happy"
+    },
+    {
+      "name": "module_desc",
+      "value": "Happy HarmonyOS entry module"
+    },
+    {
+      "name": "entryability_desc",
+      "value": "Happy HarmonyOS entry ability"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "happy-harmony",
+  "version": "0.1.0",
+  "description": "Native HarmonyOS client for Happy",
+  "main": "",
+  "author": "slopus",
+  "license": "MIT",
+  "dependencies": {}
+}

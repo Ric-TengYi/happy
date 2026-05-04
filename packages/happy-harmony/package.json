@@ -1,0 +1,20 @@
+{
+  "name": "happy-harmony",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HarmonyOS ArkTS client skeleton for Happy",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": ">=20",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "packageManager": "pnpm@10.11.0"
+}

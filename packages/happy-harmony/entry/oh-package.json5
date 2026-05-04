@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "Happy HarmonyOS entry module",
+  "main": "",
+  "author": "slopus",
+  "license": "MIT",
+  "dependencies": {}
+}

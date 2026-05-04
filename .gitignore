@@ -22,6 +22,16 @@ expo-env.d.ts
 *.key
 *.mobileprovision
 
+# HarmonyOS / Hvigor
+.hvigor/
+/packages/happy-harmony/.hvigor/
+/packages/happy-harmony/.idea/
+/packages/happy-harmony/build/
+/packages/happy-harmony/entry/.preview/
+/packages/happy-harmony/entry/build/
+/packages/happy-harmony/oh_modules/
+/packages/happy-harmony/**/oh_modules/
+
 # Metro
 .metro-health-check*
 
