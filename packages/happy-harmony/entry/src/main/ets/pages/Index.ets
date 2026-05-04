@@ -36,6 +36,7 @@ import {
 } from '../services/HappyRealtimeSync';
 import {
   HappyMessage,
+  HappyPermission,
   SendSessionMessageResult,
   SessionMessagesSnapshot,
   createLocalMessageId,
@@ -44,6 +45,7 @@ import {
   loadSessionMessages,
   sendSessionTextMessage,
 } from '../services/HappyMessages';
+import { PermissionAction, respondToSessionPermission } from '../services/HappySessionRpc';
 
 const TAB_INBOX: string = 'inbox';
 const TAB_TERMINAL: string = 'terminal';
@@ -77,11 +79,15 @@ struct Index {
   @State private syncGeneration: number = 0;
   @State private selectedSessionId: string = '';
   @State private messages: HappyMessage[] = [];
+  @State private permissions: HappyPermission[] = [];
   @State private messageStatus: string = '';
   @State private messageDraft: string = '';
   @State private messageSendStatus: string = '';
+  @State private permissionActionStatus: string = '';
+  @State private activePermissionActionId: string = '';
   @State private isMessagesLoading: boolean = false;
   @State private isMessageSending: boolean = false;
+  @State private isPermissionSubmitting: boolean = false;
   @State private hasQueuedMessageRefresh: boolean = false;
   @State private messageGeneration: number = 0;
   private realtimeSync: HappyRealtimeSync = new HappyRealtimeSync();
@@ -107,6 +113,8 @@ struct Index {
     this.hasQueuedMessageRefresh = false;
     this.isMessagesLoading = false;
     this.isMessageSending = false;
+    this.isPermissionSubmitting = false;
+    this.activePermissionActionId = '';
     this.pendingMessages = [];
     this.clearRetryMessage();
     this.stopRealtimeSync('实时同步未连接');
@@ -605,6 +613,10 @@ struct Index {
         .fontColor('#5F6368')
         .width('100%')
 
+      if (this.permissions.length > 0) {
+        this.PermissionPanel()
+      }
+
       if (this.isMessagesLoading && this.messages.length === 0) {
         Text('正在读取会话消息...')
           .fontSize(14)
@@ -656,6 +668,130 @@ struct Index {
     .width('100%')
     .padding(18)
     .backgroundColor(Color.White)
+    .borderRadius(8)
+  }
+
+  @Builder
+  private PermissionPanel() {
+    Column({ space: 10 }) {
+      Row() {
+        Text('工具审批')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .layoutWeight(1)
+
+        Text(`${this.getPendingPermissionCount()} 个待处理`)
+          .fontSize(12)
+          .fontColor('#5F6368')
+      }
+      .width('100%')
+
+      if (this.permissionActionStatus.length > 0) {
+        Text(this.permissionActionStatus)
+          .fontSize(12)
+          .fontColor('#5F6368')
+          .width('100%')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+
+      ForEach(this.permissions, (permission: HappyPermission) => {
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            Text(permission.toolName)
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#202124')
+              .layoutWeight(1)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+            Text(this.getPermissionStatusLabel(permission))
+              .fontSize(12)
+              .fontColor(this.getPermissionStatusColor(permission))
+          }
+          .width('100%')
+
+          if (permission.argumentsText.length > 0) {
+            Text(permission.argumentsText)
+              .fontSize(12)
+              .fontColor('#5F6368')
+              .width('100%')
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+
+          if (permission.status === 'pending') {
+            Row({ space: 8 }) {
+              Button('允许')
+                .height(34)
+                .layoutWeight(1)
+                .enabled(this.canSubmitPermission(permission))
+                .onClick(() => {
+                  this.submitPermissionAction(permission, 'allow');
+                })
+
+              if (this.shouldShowAllowForSession(permission)) {
+                Button(this.getAllowForSessionLabel(permission))
+                  .height(34)
+                  .layoutWeight(1.4)
+                  .enabled(this.canSubmitPermission(permission))
+                  .onClick(() => {
+                    this.submitPermissionAction(permission, 'allowForSession');
+                  })
+              }
+
+              Button(this.getDenyPermissionLabel(permission))
+                .height(34)
+                .layoutWeight(1)
+                .enabled(this.canSubmitPermission(permission))
+                .onClick(() => {
+                  this.submitPermissionAction(permission, 'deny');
+                })
+            }
+            .width('100%')
+
+            if (this.shouldShowClaudeModeActions(permission)) {
+              Row({ space: 8 }) {
+                if (this.shouldShowAllowAllEdits(permission)) {
+                  Button('允许全部编辑')
+                    .height(34)
+                    .layoutWeight(1)
+                    .enabled(this.canSubmitPermission(permission))
+                    .onClick(() => {
+                      this.submitPermissionAction(permission, 'allowAllEdits');
+                    })
+                }
+
+                if (this.shouldShowAllowEverything(permission)) {
+                  Button('允许全部操作')
+                    .height(34)
+                    .layoutWeight(1)
+                    .enabled(this.canSubmitPermission(permission))
+                    .onClick(() => {
+                      this.submitPermissionAction(permission, 'allowEverything');
+                    })
+                }
+              }
+              .width('100%')
+            }
+          } else if (permission.reason.length > 0) {
+            Text(permission.reason)
+              .fontSize(12)
+              .fontColor('#5F6368')
+              .width('100%')
+          }
+        }
+        .width('100%')
+        .padding(10)
+        .backgroundColor('#F7F8FA')
+        .borderRadius(8)
+      }, (permission: HappyPermission) => permission.id)
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor('#FFF7E6')
     .borderRadius(8)
   }
 
@@ -1448,10 +1584,14 @@ struct Index {
   private openSessionDetail(sessionId: string): void {
     this.selectedSessionId = sessionId;
     this.messages = [];
+    this.permissions = [];
     this.messageStatus = '正在读取消息...';
     this.messageDraft = '';
     this.messageSendStatus = '';
+    this.permissionActionStatus = '';
+    this.activePermissionActionId = '';
     this.isMessageSending = false;
+    this.isPermissionSubmitting = false;
     this.messageSendGeneration += 1;
     this.pendingMessages = [];
     this.clearRetryMessage();
@@ -1464,11 +1604,15 @@ struct Index {
     this.hasQueuedMessageRefresh = false;
     this.selectedSessionId = '';
     this.messages = [];
+    this.permissions = [];
     this.messageStatus = '';
     this.messageDraft = '';
     this.messageSendStatus = '';
+    this.permissionActionStatus = '';
+    this.activePermissionActionId = '';
     this.isMessagesLoading = false;
     this.isMessageSending = false;
+    this.isPermissionSubmitting = false;
     this.pendingMessages = [];
     this.clearRetryMessage();
   }
@@ -1484,6 +1628,7 @@ struct Index {
     const session = this.getSelectedSession();
     if (!session) {
       this.messages = [];
+      this.permissions = [];
       this.messageStatus = '该会话已不存在';
       return;
     }
@@ -1502,6 +1647,7 @@ struct Index {
         return;
       }
       this.messages = this.mergePendingMessages(snapshot.messages);
+      this.permissions = snapshot.permissions;
       this.messageStatus = snapshot.decodeWarningCount > 0
         ? `消息读取完成，${snapshot.decodeWarningCount} 条解密失败`
         : `消息读取完成，${snapshot.messages.length} 条`;
@@ -1670,6 +1816,180 @@ struct Index {
       }
     }
     return false;
+  }
+
+  private getPendingPermissionCount(): number {
+    let count = 0;
+    for (const permission of this.permissions) {
+      if (permission.status === 'pending') {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private getPermissionStatusLabel(permission: HappyPermission): string {
+    if (permission.status === 'pending') {
+      return this.activePermissionActionId === permission.id && this.isPermissionSubmitting ? '提交中' : '待审批';
+    }
+    if (permission.status === 'approved') {
+      if (permission.decision === 'approved_for_session') {
+        return '本会话已允许';
+      }
+      return '已允许';
+    }
+    if (permission.status === 'denied') {
+      return permission.decision === 'abort' ? '已停止' : '已拒绝';
+    }
+    if (permission.status === 'canceled') {
+      return '已取消';
+    }
+    return permission.status;
+  }
+
+  private getPermissionStatusColor(permission: HappyPermission): string {
+    if (permission.status === 'pending') {
+      return '#B06000';
+    }
+    if (permission.status === 'approved') {
+      return '#137333';
+    }
+    if (permission.status === 'denied' || permission.status === 'canceled') {
+      return '#A50E0E';
+    }
+    return '#5F6368';
+  }
+
+  private getAllowForSessionLabel(permission: HappyPermission): string {
+    return this.usesDecisionPermission(permission) ? '本会话允许' : '本工具允许';
+  }
+
+  private getDenyPermissionLabel(permission: HappyPermission): string {
+    return this.usesDecisionPermission(permission) ? '停止并说明' : '拒绝';
+  }
+
+  private shouldShowAllowForSession(permission: HappyPermission): boolean {
+    return this.usesDecisionPermission(permission) || (!this.isClaudeEditPermission(permission) && !this.isClaudeExitPlanPermission(permission));
+  }
+
+  private shouldShowClaudeModeActions(permission: HappyPermission): boolean {
+    return this.shouldShowAllowAllEdits(permission) || this.shouldShowAllowEverything(permission);
+  }
+
+  private shouldShowAllowAllEdits(permission: HappyPermission): boolean {
+    return this.isClaudePermission() && (this.isClaudeEditPermission(permission) || this.isClaudeExitPlanPermission(permission));
+  }
+
+  private shouldShowAllowEverything(permission: HappyPermission): boolean {
+    return this.isClaudePermission() && this.isClaudeExitPlanPermission(permission);
+  }
+
+  private usesDecisionPermission(permission: HappyPermission): boolean {
+    return !this.isClaudePermission() || permission.toolName.startsWith('Codex');
+  }
+
+  private isClaudePermission(): boolean {
+    const session = this.getSelectedSession();
+    const flavor = session?.metadata?.flavor;
+    return !flavor || flavor === 'claude';
+  }
+
+  private isClaudeEditPermission(permission: HappyPermission): boolean {
+    return permission.toolName === 'Edit'
+      || permission.toolName === 'MultiEdit'
+      || permission.toolName === 'Write'
+      || permission.toolName === 'NotebookEdit';
+  }
+
+  private isClaudeExitPlanPermission(permission: HappyPermission): boolean {
+    return permission.toolName === 'exit_plan_mode' || permission.toolName === 'ExitPlanMode';
+  }
+
+  private canSubmitPermission(permission: HappyPermission): boolean {
+    return this.isAuthenticated
+      && permission.status === 'pending'
+      && !this.isPermissionSubmitting
+      && this.selectedSessionId.length > 0;
+  }
+
+  private submitPermissionAction(permission: HappyPermission, action: PermissionAction): void {
+    if (!this.canSubmitPermission(permission)) {
+      return;
+    }
+    const session = this.getSelectedSession();
+    if (!session) {
+      this.permissionActionStatus = '该会话已不存在';
+      return;
+    }
+    this.isPermissionSubmitting = true;
+    this.activePermissionActionId = permission.id;
+    this.permissionActionStatus = '正在提交审批...';
+    this.submitPermissionActionAsync(session, permission, action);
+  }
+
+  private async submitPermissionActionAsync(session: HappySession, permission: HappyPermission, action: PermissionAction): Promise<void> {
+    try {
+      await respondToSessionPermission(
+        this.getAbilityContext(),
+        this.serverUrl,
+        session,
+        permission,
+        action,
+      );
+      if (this.selectedSessionId !== session.id || this.activePermissionActionId !== permission.id) {
+        return;
+      }
+      this.applyPermissionModeFromAction(session.id, action);
+      this.permissionActionStatus = '审批已提交，正在同步...';
+      this.refreshSelectedSessionMessages();
+      this.refreshControlPlaneData();
+    } catch (error) {
+      if (this.selectedSessionId !== session.id || this.activePermissionActionId !== permission.id) {
+        return;
+      }
+      console.error(`提交工具审批失败：${error}`);
+      this.permissionActionStatus = `提交失败：${this.toUserError(error, '请检查实时连接、终端状态和登录状态')}`;
+    } finally {
+      if (this.selectedSessionId === session.id && this.activePermissionActionId === permission.id) {
+        this.isPermissionSubmitting = false;
+        this.activePermissionActionId = '';
+      }
+    }
+  }
+
+  private applyPermissionModeFromAction(sessionId: string, action: PermissionAction): void {
+    let mode = '';
+    if (action === 'allowAllEdits') {
+      mode = 'acceptEdits';
+    } else if (action === 'allowEverything') {
+      mode = 'bypassPermissions';
+    }
+    if (mode.length === 0) {
+      return;
+    }
+    const sessions = this.sessions.map((session: HappySession): HappySession => {
+      if (session.id !== sessionId) {
+        return session;
+      }
+      return {
+        id: session.id,
+        seq: session.seq,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        active: session.active,
+        activeAt: session.activeAt,
+        thinking: session.thinking,
+        thinkingAt: session.thinkingAt,
+        metadata: session.metadata,
+        metadataVersion: session.metadataVersion,
+        agentState: session.agentState,
+        agentStateVersion: session.agentStateVersion,
+        dataEncryptionKey: session.dataEncryptionKey,
+        permissionMode: mode,
+        modelMode: session.modelMode ?? null,
+      };
+    });
+    this.sessions = sessions;
   }
 
   private getSelectedSession(): HappySession | null {

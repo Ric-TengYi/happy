@@ -194,6 +194,24 @@ interface SessionEventWire {
   ref?: string;
 }
 
+interface PermissionStateWire {
+  tool?: string;
+  arguments?: Object | Object[] | string | number | boolean | null;
+  createdAt?: number | null;
+  completedAt?: number | null;
+  status?: string;
+  reason?: string | null;
+  mode?: string | null;
+  allowedTools?: string[] | null;
+  allowTools?: string[] | null;
+  decision?: string | null;
+}
+
+interface AgentStateWire {
+  requests?: Record<string, PermissionStateWire> | null;
+  completedRequests?: Record<string, PermissionStateWire> | null;
+}
+
 export interface HappyMessage {
   id: string;
   localId: string | null;
@@ -207,8 +225,22 @@ export interface HappyMessage {
   isError: boolean;
 }
 
+export interface HappyPermission {
+  id: string;
+  toolName: string;
+  status: string;
+  argumentsText: string;
+  argumentsJson: string;
+  createdAt: number;
+  reason: string;
+  mode: string;
+  decision: string;
+  allowedTools: string[];
+}
+
 export interface SessionMessagesSnapshot {
   messages: HappyMessage[];
+  permissions: HappyPermission[];
   lastSeq: number;
   decodeWarningCount: number;
 }
@@ -296,6 +328,7 @@ export async function loadSessionMessages(
 
   return {
     messages,
+    permissions: extractSessionPermissions(session.agentState),
     lastSeq,
     decodeWarningCount: decodeStats.failures,
   };
@@ -368,6 +401,14 @@ export function createOptimisticUserMessage(localId: string, text: string, creat
     seq: 0,
     createdAt,
   }, 0, 'user', 'text', text, '', '', false);
+}
+
+export function encryptSessionRawPayload(value: Object, session: HappySession, credentials: Credentials): string {
+  const cipher = resolveRecordCipher(session.dataEncryptionKey, credentials);
+  if (!cipher) {
+    throw new Error('会话密钥不可用');
+  }
+  return encryptRawJson(value, cipher);
 }
 
 export function createLocalMessageId(): string {
@@ -455,9 +496,84 @@ function decryptMessageContent(content: SessionMessageWireContent, cipher: Recor
 }
 
 function encryptRawRecord(record: RawUserTextRecord, cipher: RecordCipher): string {
-  const plain = utf8StringToBytes(JSON.stringify(record));
+  return encryptRawJson(record, cipher);
+}
+
+function encryptRawJson(value: Object, cipher: RecordCipher): string {
+  const plain = utf8StringToBytes(JSON.stringify(value));
   const encrypted = cipher.isDataKey ? encryptAesGcm(plain, cipher.key) : encryptSecretBox(plain, cipher.key);
   return encodeBase64(encrypted);
+}
+
+function extractSessionPermissions(agentState: Object | null): HappyPermission[] {
+  if (!agentState) {
+    return [];
+  }
+  const state = agentState as AgentStateWire;
+  const permissions: HappyPermission[] = [];
+  const completed = state.completedRequests;
+  if (state.requests) {
+    const requestIds = Object.keys(state.requests);
+    for (const id of requestIds) {
+      if (completed && completed[id]) {
+        continue;
+      }
+      permissions.push(makePermission(id, state.requests[id], 'pending'));
+    }
+  }
+  if (completed) {
+    const completedIds = Object.keys(completed);
+    for (const id of completedIds) {
+      permissions.push(makePermission(id, completed[id], normalizeOptionalText(completed[id].status) || 'completed'));
+    }
+  }
+  permissions.sort((left: HappyPermission, right: HappyPermission): number => left.createdAt - right.createdAt);
+  return permissions;
+}
+
+function makePermission(id: string, wire: PermissionStateWire, fallbackStatus: string): HappyPermission {
+  const allowedTools = wire.allowedTools ?? wire.allowTools ?? [];
+  const argumentsJson = stringifyPermissionArguments(wire.arguments);
+  return {
+    id,
+    toolName: normalizeOptionalText(wire.tool) || '工具调用',
+    status: normalizeOptionalText(wire.status) || fallbackStatus,
+    argumentsText: truncateText(argumentsJson),
+    argumentsJson,
+    createdAt: typeof wire.createdAt === 'number' ? wire.createdAt : Date.now(),
+    reason: normalizeOptionalText(wire.reason),
+    mode: normalizeOptionalText(wire.mode),
+    decision: normalizeOptionalText(wire.decision),
+    allowedTools,
+  };
+}
+
+function summarizePermissionArguments(value: Object | Object[] | string | number | boolean | null | undefined): string {
+  return truncateText(stringifyPermissionArguments(value));
+}
+
+function stringifyPermissionArguments(value: Object | Object[] | string | number | boolean | null | undefined): string {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return `${value}`;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
+}
+
+function truncateText(value: string): string {
+  if (value.length > TOOL_OUTPUT_MAX_LENGTH) {
+    return `${value.substring(0, TOOL_OUTPUT_MAX_LENGTH - 3)}...`;
+  }
+  return value;
 }
 
 function normalizeRawMessage(base: MessageBase, raw: Object): HappyMessage[] {
