@@ -2,6 +2,7 @@ export * from './authService';
 export * from './authStateService';
 export * from './base64';
 export * from './boxEncryption';
+export * from './controlPlaneClient';
 export * from './credentialStore';
 export * from './cryptoLayout';
 export * from './secretKeyBackup';

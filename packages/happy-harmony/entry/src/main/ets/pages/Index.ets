@@ -18,6 +18,17 @@ import {
   validateHappyServer,
   validateServerUrl,
 } from '../services/HappyAuth';
+import {
+  ControlPlaneSnapshot,
+  HappyMachine,
+  HappySession,
+  getControlPlaneSummary,
+  getMachineSubtitle,
+  getMachineTitle,
+  getSessionSubtitle,
+  getSessionTitle,
+  loadControlPlaneSnapshot,
+} from '../services/HappySync';
 
 const TAB_INBOX: string = 'inbox';
 const TAB_TERMINAL: string = 'terminal';
@@ -42,6 +53,12 @@ struct Index {
   @State private showServerPanel: boolean = false;
   @State private serverAction: string = '';
   @State private authAction: string = '';
+  @State private machines: HappyMachine[] = [];
+  @State private sessions: HappySession[] = [];
+  @State private syncStatus: string = '同步未开始';
+  @State private isSyncLoading: boolean = false;
+  @State private hasQueuedSyncRefresh: boolean = false;
+  @State private syncGeneration: number = 0;
 
   aboutToAppear(): void {
     this.loadStateAsync();
@@ -123,19 +140,21 @@ struct Index {
     Column({ space: 14 }) {
       this.StatusStrip()
 
-      Column({ space: 10 }) {
-        Text('暂无收件')
-          .fontSize(18)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#202124')
-          .width('100%')
+      if (this.isLoadingState) {
+        this.LoadingPanel()
+      } else if (!this.isAuthenticated) {
+        Column({ space: 10 }) {
+          Text('暂无收件')
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#202124')
+            .width('100%')
 
-        Text(this.isAuthenticated ? '终端连接后，会话和审批消息会出现在这里' : '请先在设置中创建或恢复账号')
-          .fontSize(14)
-          .fontColor('#5F6368')
-          .width('100%')
+          Text('请先在设置中创建或恢复账号')
+            .fontSize(14)
+            .fontColor('#5F6368')
+            .width('100%')
 
-        if (!this.isAuthenticated && !this.isLoadingState) {
           Button('去设置账号')
             .width('100%')
             .height(44)
@@ -144,11 +163,14 @@ struct Index {
               this.activeTab = TAB_SETTINGS;
             })
         }
+        .width('100%')
+        .padding(18)
+        .backgroundColor(Color.White)
+        .borderRadius(8)
+      } else {
+        this.SyncSummaryPanel()
+        this.SessionListPanel()
       }
-      .width('100%')
-      .padding(18)
-      .backgroundColor(Color.White)
-      .borderRadius(8)
     }
     .width('100%')
     .justifyContent(FlexAlign.Start)
@@ -164,6 +186,9 @@ struct Index {
       } else if (!this.isAuthenticated) {
         this.RequireAccountPanel()
       } else {
+        this.SyncSummaryPanel()
+        this.MachineListPanel()
+
         Column({ space: 14 }) {
           Text('关联终端')
             .fontSize(18)
@@ -289,6 +314,186 @@ struct Index {
     .width('100%')
     .padding({ left: 14, right: 14, top: 10, bottom: 10 })
     .backgroundColor('#EEF3F8')
+    .borderRadius(8)
+  }
+
+  @Builder
+  private SyncSummaryPanel() {
+    Row({ space: 10 }) {
+      Column({ space: 2 }) {
+        Text(this.syncStatus)
+          .fontSize(13)
+          .fontColor('#202124')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(this.machines.length > 0 || this.sessions.length > 0 ? getControlPlaneSummary({
+          machines: this.machines,
+          sessions: this.sessions,
+        }) : '终端授权后会自动同步机器和会话')
+          .fontSize(12)
+          .fontColor('#5F6368')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Button(this.isSyncLoading ? '同步中' : '刷新')
+        .width(76)
+        .height(36)
+        .enabled(!this.isSyncLoading && this.isAuthenticated)
+        .onClick(() => {
+          this.refreshControlPlaneData();
+        })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+    .backgroundColor(Color.White)
+    .borderRadius(8)
+  }
+
+  @Builder
+  private MachineListPanel() {
+    Column({ space: 12 }) {
+      Row() {
+        Text('已关联终端')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .layoutWeight(1)
+
+        Text(`${this.machines.length} 台`)
+          .fontSize(12)
+          .fontColor('#5F6368')
+      }
+      .width('100%')
+
+      if (this.isSyncLoading && this.machines.length === 0) {
+        Text('正在读取终端列表...')
+          .fontSize(14)
+          .fontColor('#5F6368')
+          .width('100%')
+      } else if (this.machines.length === 0) {
+        Text('还没有读取到已授权终端。可以扫码或粘贴 URL 关联 CLI。')
+          .fontSize(14)
+          .fontColor('#5F6368')
+          .width('100%')
+      } else {
+        ForEach(this.machines, (machine: HappyMachine) => {
+          this.MachineRow(machine)
+        }, (machine: HappyMachine) => machine.id)
+      }
+    }
+    .width('100%')
+    .padding(18)
+    .backgroundColor(Color.White)
+    .borderRadius(8)
+  }
+
+  @Builder
+  private MachineRow(machine: HappyMachine) {
+    Row({ space: 10 }) {
+      Circle()
+        .width(10)
+        .height(10)
+        .fill(machine.active ? '#137333' : '#9AA0A6')
+
+      Column({ space: 2 }) {
+        Text(getMachineTitle(machine))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(getMachineSubtitle(machine))
+          .fontSize(12)
+          .fontColor('#5F6368')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .backgroundColor('#F7F8FA')
+    .borderRadius(8)
+  }
+
+  @Builder
+  private SessionListPanel() {
+    Column({ space: 12 }) {
+      Row() {
+        Text('最近会话')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .layoutWeight(1)
+
+        Text(`${this.sessions.length} 个`)
+          .fontSize(12)
+          .fontColor('#5F6368')
+      }
+      .width('100%')
+
+      if (this.isSyncLoading && this.sessions.length === 0) {
+        Text('正在读取会话列表...')
+          .fontSize(14)
+          .fontColor('#5F6368')
+          .width('100%')
+      } else if (this.sessions.length === 0) {
+        Text('暂无会话。终端启动 Happy 会话后会显示在这里。')
+          .fontSize(14)
+          .fontColor('#5F6368')
+          .width('100%')
+      } else {
+        ForEach(this.sessions, (session: HappySession) => {
+          this.SessionRow(session)
+        }, (session: HappySession) => session.id)
+      }
+    }
+    .width('100%')
+    .padding(18)
+    .backgroundColor(Color.White)
+    .borderRadius(8)
+  }
+
+  @Builder
+  private SessionRow(session: HappySession) {
+    Row({ space: 10 }) {
+      Circle()
+        .width(10)
+        .height(10)
+        .fill(session.active ? '#137333' : '#9AA0A6')
+
+      Column({ space: 2 }) {
+        Text(getSessionTitle(session))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(getSessionSubtitle(session))
+          .fontSize(12)
+          .fontColor('#5F6368')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .backgroundColor('#F7F8FA')
     .borderRadius(8)
   }
 
@@ -531,6 +736,7 @@ struct Index {
     this.backupSecret = '';
     this.terminalAuthStatus = '';
     this.status = '正在读取登录状态...';
+    this.syncStatus = '同步未开始';
     try {
       const context = this.getAbilityContext();
       this.serverUrl = getServerUrl(context);
@@ -538,8 +744,10 @@ struct Index {
       if (credentials) {
         this.markAuthenticated(credentials, '已从本机读取登录状态');
         this.backupSecret = formatBackupSecret(credentials.secretBase64Url);
+        this.refreshControlPlaneData();
       } else {
         this.markUnauthenticated('未登录');
+        this.clearControlPlaneData('未登录，已清空同步数据');
         this.status = '请选择创建账号或手动恢复';
         this.activeTab = TAB_SETTINGS;
       }
@@ -549,6 +757,7 @@ struct Index {
       this.backupSecret = '';
       this.terminalAuthStatus = '';
       this.accountStatus = '登录状态读取失败';
+      this.clearControlPlaneData('同步未开始');
       this.hasStateLoadError = true;
       this.status = '读取登录状态失败，请稍后重试';
       this.activeTab = TAB_SETTINGS;
@@ -586,6 +795,10 @@ struct Index {
       this.serverUrl = getServerUrl(this.getAbilityContext());
       this.status = '服务器连接正常，已保存';
       this.showServerPanel = false;
+      this.clearControlPlaneData('服务器已切换，等待重新同步');
+      if (this.isAuthenticated) {
+        this.refreshControlPlaneData();
+      }
     } catch (error) {
       console.error(`无法连接服务器：${error}`);
       this.status = '无法连接服务器，请检查地址和网络';
@@ -611,6 +824,10 @@ struct Index {
       this.serverUrl = getDefaultServerUrl();
       this.status = '已恢复默认服务器';
       this.showServerPanel = false;
+      this.clearControlPlaneData('服务器已恢复默认，等待重新同步');
+      if (this.isAuthenticated) {
+        this.refreshControlPlaneData();
+      }
     } catch (error) {
       console.error(`恢复默认服务器失败：${error}`);
       this.status = '恢复默认服务器失败，请稍后重试';
@@ -643,6 +860,7 @@ struct Index {
       this.backupSecret = result.backupSecret;
       this.serverUrl = getServerUrl(this.getAbilityContext());
       this.activeTab = TAB_INBOX;
+      this.refreshControlPlaneData();
     } catch (error) {
       console.error(`创建账号失败：${error}`);
       this.status = `创建账号失败：${this.toUserError(error, '请检查服务器和网络后重试')}`;
@@ -679,6 +897,7 @@ struct Index {
       this.backupSecret = result.backupSecret;
       this.serverUrl = getServerUrl(this.getAbilityContext());
       this.activeTab = TAB_INBOX;
+      this.refreshControlPlaneData();
     } catch (error) {
       console.error(`恢复账号失败：${error}`);
       this.status = `恢复账号失败：${this.toUserError(error, '请检查备份密钥、服务器和网络')}`;
@@ -702,6 +921,7 @@ struct Index {
       this.backupSecret = '';
       this.terminalQrText = '';
       this.terminalAuthStatus = '';
+      this.clearControlPlaneData('已退出登录，已清空同步数据');
       this.markUnauthenticated('已退出登录，服务器配置已保留');
       this.activeTab = TAB_SETTINGS;
     } catch (error) {
@@ -784,9 +1004,11 @@ struct Index {
       if (result.status === 'approved') {
         this.terminalAuthStatus = `终端授权成功：${result.publicKeyPreview}`;
         this.status = '终端授权成功，请回到 CLI 查看连接状态';
+        this.refreshControlPlaneData();
       } else if (result.status === 'already_authorized') {
         this.terminalAuthStatus = `该终端已授权：${result.publicKeyPreview}`;
         this.status = '该终端已授权';
+        this.refreshControlPlaneData();
       } else {
         this.terminalAuthStatus = `未找到待授权终端：${result.publicKeyPreview}`;
         this.status = '未找到待授权终端，请在 CLI 重新生成二维码';
@@ -798,6 +1020,61 @@ struct Index {
     } finally {
       this.authAction = '';
     }
+  }
+
+  private refreshControlPlaneData(): void {
+    if (!this.isAuthenticated) {
+      return;
+    }
+    if (this.isSyncLoading) {
+      this.hasQueuedSyncRefresh = true;
+      return;
+    }
+    const generation = this.syncGeneration + 1;
+    const serverUrl = this.serverUrl;
+    this.syncGeneration = generation;
+    this.hasQueuedSyncRefresh = false;
+    this.isSyncLoading = true;
+    this.syncStatus = '正在同步终端和会话...';
+    this.refreshControlPlaneDataAsync(generation, serverUrl);
+  }
+
+  private async refreshControlPlaneDataAsync(generation: number, serverUrl: string): Promise<void> {
+    try {
+      const snapshot: ControlPlaneSnapshot = await loadControlPlaneSnapshot(this.getAbilityContext(), serverUrl);
+      if (!this.isCurrentSync(generation)) {
+        return;
+      }
+      this.machines = snapshot.machines;
+      this.sessions = snapshot.sessions;
+      this.syncStatus = snapshot.decodeWarningCount > 0 ? `同步完成，${snapshot.decodeWarningCount} 个字段解密失败` : '同步完成';
+    } catch (error) {
+      if (!this.isCurrentSync(generation)) {
+        return;
+      }
+      console.error(`同步终端和会话失败：${error}`);
+      this.syncStatus = `同步失败：${this.toUserError(error, '请检查服务器、网络和登录状态')}`;
+    } finally {
+      if (generation === this.syncGeneration) {
+        this.isSyncLoading = false;
+        if (this.hasQueuedSyncRefresh && this.isAuthenticated) {
+          this.refreshControlPlaneData();
+        }
+      }
+    }
+  }
+
+  private clearControlPlaneData(status: string): void {
+    this.syncGeneration += 1;
+    this.hasQueuedSyncRefresh = false;
+    this.machines = [];
+    this.sessions = [];
+    this.syncStatus = status;
+    this.isSyncLoading = false;
+  }
+
+  private isCurrentSync(generation: number): boolean {
+    return generation === this.syncGeneration && this.isAuthenticated;
   }
 
   private markAuthenticated(credentials: Credentials, status: string): void {

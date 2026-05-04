@@ -19,6 +19,32 @@ export function deriveContentPublicKey(masterSecret: Uint8Array): Uint8Array {
   return boxPublicKeyFromSeed(contentSeed);
 }
 
+export function deriveContentSecretKey(masterSecret: Uint8Array): Uint8Array {
+  const contentSeed = deriveKey(masterSecret, 'Happy EnCoder', ['content']);
+  return sha512(contentSeed).slice(0, BOX_KEY_LENGTH);
+}
+
+export function decryptBoxBundle(bundle: Uint8Array, recipientSecretKey: Uint8Array): Uint8Array | null {
+  assertLength(recipientSecretKey, BOX_KEY_LENGTH, '内容私钥');
+  if (bundle.length < BOX_KEY_LENGTH + BOX_NONCE_LENGTH + BOX_MAC_LENGTH) {
+    return null;
+  }
+  const senderPublicKey = bundle.slice(0, BOX_KEY_LENGTH);
+  const nonce = bundle.slice(BOX_KEY_LENGTH, BOX_KEY_LENGTH + BOX_NONCE_LENGTH);
+  const ciphertext = bundle.slice(BOX_KEY_LENGTH + BOX_NONCE_LENGTH);
+  return secretBoxOpenEasy(ciphertext, nonce, boxBeforeNm(senderPublicKey, recipientSecretKey));
+}
+
+export function decryptSecretBox(bundle: Uint8Array, secretKey: Uint8Array): Uint8Array | null {
+  assertLength(secretKey, BOX_KEY_LENGTH, '记录密钥');
+  if (bundle.length < BOX_NONCE_LENGTH + BOX_MAC_LENGTH) {
+    return null;
+  }
+  const nonce = bundle.slice(0, BOX_NONCE_LENGTH);
+  const ciphertext = bundle.slice(BOX_NONCE_LENGTH);
+  return secretBoxOpenEasy(ciphertext, nonce, secretKey);
+}
+
 function encryptBoxWithSecretKey(
   message: Uint8Array,
   recipientPublicKey: Uint8Array,
@@ -79,6 +105,24 @@ function secretBoxEasy(message: Uint8Array, nonce: Uint8Array, key: Uint8Array):
     encrypted[index] = message[index] ^ stream[index + 32];
   }
   return concatBytes(poly1305Mac(encrypted, stream.slice(0, 32)), encrypted);
+}
+
+function secretBoxOpenEasy(box: Uint8Array, nonce: Uint8Array, key: Uint8Array): Uint8Array | null {
+  if (box.length < BOX_MAC_LENGTH) {
+    return null;
+  }
+  const mac = box.slice(0, BOX_MAC_LENGTH);
+  const encrypted = box.slice(BOX_MAC_LENGTH);
+  const stream = xsalsa20Stream(32 + encrypted.length, nonce, key);
+  const expectedMac = poly1305Mac(encrypted, stream.slice(0, 32));
+  if (!bytesEqual(mac, expectedMac)) {
+    return null;
+  }
+  const message = new Uint8Array(encrypted.length);
+  for (let index = 0; index < encrypted.length; index += 1) {
+    message[index] = encrypted[index] ^ stream[index + 32];
+  }
+  return message;
 }
 
 function xsalsa20Stream(length: number, nonce: Uint8Array, key: Uint8Array): Uint8Array {
@@ -430,6 +474,18 @@ function stringToBytes(value: string): Uint8Array {
     bytes[index] = value.charCodeAt(index) & 0xff;
   }
   return bytes;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function assertLength(bytes: Uint8Array, length: number, label: string): void {
