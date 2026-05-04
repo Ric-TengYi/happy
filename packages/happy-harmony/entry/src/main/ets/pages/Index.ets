@@ -34,6 +34,12 @@ import {
   MachineActivityEvent,
   SessionActivityEvent,
 } from '../services/HappyRealtimeSync';
+import {
+  HappyMessage,
+  SessionMessagesSnapshot,
+  getMessageRoleLabel,
+  loadSessionMessages,
+} from '../services/HappyMessages';
 
 const TAB_INBOX: string = 'inbox';
 const TAB_TERMINAL: string = 'terminal';
@@ -65,6 +71,12 @@ struct Index {
   @State private isSyncLoading: boolean = false;
   @State private hasQueuedSyncRefresh: boolean = false;
   @State private syncGeneration: number = 0;
+  @State private selectedSessionId: string = '';
+  @State private messages: HappyMessage[] = [];
+  @State private messageStatus: string = '';
+  @State private isMessagesLoading: boolean = false;
+  @State private hasQueuedMessageRefresh: boolean = false;
+  @State private messageGeneration: number = 0;
   private realtimeSync: HappyRealtimeSync = new HappyRealtimeSync();
   private isPageActive: boolean = false;
   private loadStateGeneration: number = 0;
@@ -78,6 +90,9 @@ struct Index {
   aboutToDisappear(): void {
     this.isPageActive = false;
     this.loadStateGeneration += 1;
+    this.messageGeneration += 1;
+    this.hasQueuedMessageRefresh = false;
+    this.isMessagesLoading = false;
     this.stopRealtimeSync('实时同步未连接');
   }
 
@@ -185,8 +200,12 @@ struct Index {
         .backgroundColor(Color.White)
         .borderRadius(8)
       } else {
-        this.SyncSummaryPanel()
-        this.SessionListPanel()
+        if (this.selectedSessionId.length > 0) {
+          this.SessionDetailPanel()
+        } else {
+          this.SyncSummaryPanel()
+          this.SessionListPanel()
+        }
       }
     }
     .width('100%')
@@ -519,6 +538,110 @@ struct Index {
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .backgroundColor('#F7F8FA')
     .borderRadius(8)
+    .onClick(() => {
+      this.openSessionDetail(session.id);
+    })
+  }
+
+  @Builder
+  private SessionDetailPanel() {
+    Column({ space: 12 }) {
+      Row({ space: 10 }) {
+        Button('返回')
+          .width(68)
+          .height(36)
+          .enabled(!this.isMessagesLoading)
+          .onClick(() => {
+            this.closeSessionDetail();
+          })
+
+        Column({ space: 2 }) {
+          Text(this.getSelectedSessionTitle())
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#202124')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+
+          Text(this.getSelectedSessionSubtitle())
+            .fontSize(12)
+            .fontColor('#5F6368')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Button(this.isMessagesLoading ? '读取中' : '刷新')
+          .width(76)
+          .height(36)
+          .enabled(!this.isMessagesLoading && this.isAuthenticated)
+          .onClick(() => {
+            this.refreshSelectedSessionMessages();
+          })
+      }
+      .width('100%')
+
+      Text(this.messageStatus.length > 0 ? this.messageStatus : '点击刷新读取消息')
+        .fontSize(12)
+        .fontColor('#5F6368')
+        .width('100%')
+
+      if (this.isMessagesLoading && this.messages.length === 0) {
+        Text('正在读取会话消息...')
+          .fontSize(14)
+          .fontColor('#5F6368')
+          .width('100%')
+      } else if (this.messages.length === 0) {
+        Text('暂无消息。该会话有新消息后会显示在这里。')
+          .fontSize(14)
+          .fontColor('#5F6368')
+          .width('100%')
+      } else {
+        ForEach(this.messages, (message: HappyMessage) => {
+          this.MessageRow(message)
+        }, (message: HappyMessage) => message.id)
+      }
+    }
+    .width('100%')
+    .padding(18)
+    .backgroundColor(Color.White)
+    .borderRadius(8)
+  }
+
+  @Builder
+  private MessageRow(message: HappyMessage) {
+    Row() {
+      if (message.role === 'user') {
+        Blank()
+          .layoutWeight(1)
+      }
+
+      Column({ space: 4 }) {
+        Text(getMessageRoleLabel(message))
+          .fontSize(11)
+          .fontColor(this.getMessageMetaColor(message))
+          .width('100%')
+
+        Text(message.text)
+          .fontSize(14)
+          .fontColor(this.getMessageTextColor(message))
+          .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('84%')
+      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .backgroundColor(this.getMessageBackgroundColor(message))
+      .borderRadius(8)
+
+      if (message.role !== 'user') {
+        Blank()
+          .layoutWeight(1)
+      }
+    }
+    .width('100%')
   }
 
   @Builder
@@ -1084,6 +1207,7 @@ struct Index {
       }
       this.machines = snapshot.machines;
       this.sessions = snapshot.sessions;
+      this.dropSelectedSessionIfMissing();
       this.syncStatus = snapshot.decodeWarningCount > 0 ? `同步完成，${snapshot.decodeWarningCount} 个字段解密失败` : '同步完成';
     } catch (error) {
       if (!this.isCurrentSync(generation)) {
@@ -1106,6 +1230,7 @@ struct Index {
     this.hasQueuedSyncRefresh = false;
     this.machines = [];
     this.sessions = [];
+    this.closeSessionDetail();
     this.syncStatus = status;
     this.isSyncLoading = false;
   }
@@ -1145,6 +1270,7 @@ struct Index {
           return;
         }
         this.refreshControlPlaneData();
+        this.refreshSelectedSessionMessages();
       },
       (): void => {
         if (!this.isCurrentRealtime(generation)) {
@@ -1152,6 +1278,10 @@ struct Index {
         }
         this.syncStatus = '收到实时更新，正在同步...';
         this.refreshControlPlaneData();
+        if (this.selectedSessionId.length > 0) {
+          this.messageStatus = '收到实时更新，正在读取消息...';
+          this.refreshSelectedSessionMessages();
+        }
       },
       (event: MachineActivityEvent): void => {
         if (!this.isCurrentRealtime(generation)) {
@@ -1267,6 +1397,133 @@ struct Index {
     this.syncStatus = event.thinking ? '会话正在思考' : '会话状态已实时更新';
   }
 
+  private openSessionDetail(sessionId: string): void {
+    this.selectedSessionId = sessionId;
+    this.messages = [];
+    this.messageStatus = '正在读取消息...';
+    this.refreshSelectedSessionMessages();
+  }
+
+  private closeSessionDetail(): void {
+    this.messageGeneration += 1;
+    this.hasQueuedMessageRefresh = false;
+    this.selectedSessionId = '';
+    this.messages = [];
+    this.messageStatus = '';
+    this.isMessagesLoading = false;
+  }
+
+  private refreshSelectedSessionMessages(): void {
+    if (!this.isAuthenticated || this.selectedSessionId.length === 0) {
+      return;
+    }
+    if (this.isMessagesLoading) {
+      this.hasQueuedMessageRefresh = true;
+      return;
+    }
+    const session = this.getSelectedSession();
+    if (!session) {
+      this.messages = [];
+      this.messageStatus = '该会话已不存在';
+      return;
+    }
+    const generation = this.messageGeneration + 1;
+    this.messageGeneration = generation;
+    this.hasQueuedMessageRefresh = false;
+    this.isMessagesLoading = true;
+    this.messageStatus = '正在读取消息...';
+    this.refreshSelectedSessionMessagesAsync(generation, this.serverUrl, session);
+  }
+
+  private async refreshSelectedSessionMessagesAsync(generation: number, serverUrl: string, session: HappySession): Promise<void> {
+    try {
+      const snapshot: SessionMessagesSnapshot = await loadSessionMessages(this.getAbilityContext(), serverUrl, session);
+      if (!this.isCurrentMessageLoad(generation, session.id)) {
+        return;
+      }
+      this.messages = snapshot.messages;
+      this.messageStatus = snapshot.decodeWarningCount > 0
+        ? `消息读取完成，${snapshot.decodeWarningCount} 条解密失败`
+        : `消息读取完成，${snapshot.messages.length} 条`;
+    } catch (error) {
+      if (!this.isCurrentMessageLoad(generation, session.id)) {
+        return;
+      }
+      console.error(`读取会话消息失败：${error}`);
+      this.messageStatus = `消息读取失败：${this.toUserError(error, '请检查服务器、网络和登录状态')}`;
+    } finally {
+      if (this.isCurrentMessageLoad(generation, session.id)) {
+        this.isMessagesLoading = false;
+        if (this.hasQueuedMessageRefresh && this.isAuthenticated && this.selectedSessionId.length > 0) {
+          this.refreshSelectedSessionMessages();
+        }
+      }
+    }
+  }
+
+  private isCurrentMessageLoad(generation: number, sessionId: string): boolean {
+    return this.isPageActive && this.isAuthenticated && generation === this.messageGeneration && this.selectedSessionId === sessionId;
+  }
+
+  private getSelectedSession(): HappySession | null {
+    for (let index = 0; index < this.sessions.length; index += 1) {
+      if (this.sessions[index].id === this.selectedSessionId) {
+        return this.sessions[index];
+      }
+    }
+    return null;
+  }
+
+  private dropSelectedSessionIfMissing(): void {
+    if (this.selectedSessionId.length === 0) {
+      return;
+    }
+    if (!this.getSelectedSession()) {
+      this.closeSessionDetail();
+      this.syncStatus = '当前会话已删除，已返回会话列表';
+    }
+  }
+
+  private getSelectedSessionTitle(): string {
+    const session = this.getSelectedSession();
+    return session ? getSessionTitle(session) : '会话详情';
+  }
+
+  private getSelectedSessionSubtitle(): string {
+    const session = this.getSelectedSession();
+    return session ? getSessionSubtitle(session) : '会话已不存在';
+  }
+
+  private getMessageBackgroundColor(message: HappyMessage): string {
+    if (message.role === 'user') {
+      return '#E8F0FE';
+    }
+    if (message.kind === 'tool-call' || message.kind === 'tool-result') {
+      return '#F1F3F4';
+    }
+    if (message.kind === 'thinking') {
+      return '#FFF7E0';
+    }
+    return '#F7F8FA';
+  }
+
+  private getMessageTextColor(message: HappyMessage): string {
+    if (message.isError) {
+      return '#B3261E';
+    }
+    return '#202124';
+  }
+
+  private getMessageMetaColor(message: HappyMessage): string {
+    if (message.role === 'user') {
+      return '#0B57D0';
+    }
+    if (message.isError) {
+      return '#B3261E';
+    }
+    return '#5F6368';
+  }
+
   private markAuthenticated(credentials: Credentials, status: string): void {
     this.isAuthenticated = true;
     this.hasStateLoadError = false;
@@ -1315,6 +1572,9 @@ struct Index {
     if (this.activeTab === TAB_SETTINGS) {
       return '设置';
     }
+    if (this.selectedSessionId.length > 0) {
+      return '会话';
+    }
     return '收件箱';
   }
 
@@ -1324,6 +1584,9 @@ struct Index {
     }
     if (this.activeTab === TAB_SETTINGS) {
       return '账号与服务器';
+    }
+    if (this.selectedSessionId.length > 0) {
+      return this.getSelectedSessionTitle();
     }
     return this.isAuthenticated ? 'Happy 鸿蒙客户端' : '请先完成账号设置';
   }

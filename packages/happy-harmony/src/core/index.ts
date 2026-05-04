@@ -8,5 +8,6 @@ export * from './cryptoLayout';
 export * from './realtimeSync';
 export * from './secretKeyBackup';
 export * from './serverConfigService';
+export * from './sessionMessages';
 export * from './storage';
 export * from './terminalAuthService';
