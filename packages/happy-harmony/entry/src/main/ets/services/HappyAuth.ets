@@ -4,6 +4,7 @@ import { asset } from '@kit.AssetStoreKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { http } from '@kit.NetworkKit';
+import { deriveContentPublicKey, encryptBox } from './HappyBox';
 
 const DEFAULT_SERVER_URL: string = 'https://47.118.25.177';
 const HAPPY_SERVER_MARKER: string = 'Welcome to Happy Server!';
@@ -13,6 +14,7 @@ const AUTH_TOKEN_ALIAS: string = 'happy-auth-token';
 const AUTH_SECRET_ALIAS: string = 'happy-auth-secret';
 const ASSET_NOT_FOUND_CODE: number = 24000002;
 const ACCOUNT_SECRET_LENGTH: number = 32;
+const BOX_PUBLIC_KEY_LENGTH: number = 32;
 const ED25519_SIGNATURE_LENGTH: number = 64;
 const BASE64_ALPHABET: string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const BASE32_ALPHABET: string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -56,10 +58,36 @@ interface AuthHeaders {
   'X-Happy-Client': string;
 }
 
+interface HappyClientHeaders {
+  'X-Happy-Client': string;
+}
+
+interface TerminalApprovalHeaders {
+  'Content-Type': string;
+  'Authorization': string;
+  'X-Happy-Client': string;
+}
+
 interface AuthRequestBody {
   publicKey: string;
   challenge: string;
   signature: string;
+}
+
+interface TerminalAuthStatusResponse {
+  status?: string;
+  supportsV2?: boolean;
+}
+
+interface TerminalAuthResponseBody {
+  publicKey: string;
+  response: string;
+}
+
+export interface TerminalAuthResult {
+  status: string;
+  supportsV2: boolean;
+  publicKeyPreview: string;
 }
 
 interface TextResponse {
@@ -161,6 +189,82 @@ export async function restoreAccount(
 
 export async function logout(context: common.UIAbilityContext): Promise<void> {
   await removeStoredCredentials();
+}
+
+export async function approveTerminalAuthUrl(
+  context: common.UIAbilityContext,
+  serverUrl: string,
+  authUrl: string,
+): Promise<TerminalAuthResult> {
+  const normalizedServerUrl = normalizeServerUrl(serverUrl);
+  const credentials = await loadCredentials(context);
+  if (!credentials) {
+    throw new Error('请先登录账号');
+  }
+  if (credentials.token.length === 0) {
+    throw new Error('登录 token 为空');
+  }
+
+  const publicKey = parseTerminalAuthUrl(authUrl);
+  const publicKeyBase64 = encodeBase64(publicKey);
+  const statusHeaders: HappyClientHeaders = {
+    'X-Happy-Client': 'harmony/0.1.0',
+  };
+  const statusResponse = await requestText(
+    `${normalizedServerUrl}/v1/auth/request/status?publicKey=${encodeQueryValue(publicKeyBase64)}`,
+    http.RequestMethod.GET,
+    undefined,
+    statusHeaders,
+  );
+  if (!statusResponse.ok) {
+    throw new Error(`读取终端授权状态失败：${statusResponse.statusCode}`);
+  }
+  const data = JSON.parse(statusResponse.text) as TerminalAuthStatusResponse;
+  const supportsV2 = data.supportsV2 === true;
+  if (data.status === 'not_found') {
+    return {
+      status: 'not_found',
+      supportsV2,
+      publicKeyPreview: previewPublicKey(publicKeyBase64),
+    };
+  }
+  if (data.status === 'authorized') {
+    return {
+      status: 'already_authorized',
+      supportsV2,
+      publicKeyPreview: previewPublicKey(publicKeyBase64),
+    };
+  }
+  if (data.status !== 'pending') {
+    throw new Error('终端授权状态不正确');
+  }
+
+  const secret = decodeBase64Url(credentials.secretBase64Url);
+  assertAccountSecret(secret);
+  const plaintext = supportsV2 ? buildTerminalV2Plaintext(secret) : secret;
+  const responseBody: TerminalAuthResponseBody = {
+    publicKey: publicKeyBase64,
+    response: encodeBase64(encryptBox(plaintext, publicKey)),
+  };
+  const approvalHeaders: TerminalApprovalHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${credentials.token}`,
+    'X-Happy-Client': 'harmony/0.1.0',
+  };
+  const approvalResponse = await requestText(
+    `${normalizedServerUrl}/v1/auth/response`,
+    http.RequestMethod.POST,
+    JSON.stringify(responseBody),
+    approvalHeaders,
+  );
+  if (!approvalResponse.ok) {
+    throw new Error(`终端授权失败：${approvalResponse.statusCode}`);
+  }
+  return {
+    status: 'approved',
+    supportsV2,
+    publicKeyPreview: previewPublicKey(publicKeyBase64),
+  };
 }
 
 export function maskToken(token: string): string {
@@ -284,6 +388,57 @@ function normalizeServerUrl(url: string): string {
     normalized = normalized.substring(0, normalized.length - 1);
   }
   return normalized;
+}
+
+function parseTerminalAuthUrl(url: string): Uint8Array {
+  const prefix = 'happy://terminal?';
+  const trimmed = url.trim();
+  if (!trimmed.startsWith(prefix)) {
+    throw new Error('请输入 happy://terminal? 开头的终端授权内容');
+  }
+  const tail = trimmed.substring(prefix.length);
+  if (tail.length === 0) {
+    throw new Error('终端授权内容缺少公钥');
+  }
+  const publicKey = decodeBase64Url(tail);
+  if (publicKey.length !== BOX_PUBLIC_KEY_LENGTH) {
+    throw new Error('终端授权公钥必须是 32 字节');
+  }
+  return publicKey;
+}
+
+function buildTerminalV2Plaintext(secret: Uint8Array): Uint8Array {
+  const contentPublicKey = deriveContentPublicKey(secret);
+  if (contentPublicKey.length !== BOX_PUBLIC_KEY_LENGTH) {
+    throw new Error('内容公钥派生失败');
+  }
+  const plaintext = new Uint8Array(BOX_PUBLIC_KEY_LENGTH + 1);
+  plaintext[0] = 0;
+  plaintext.set(contentPublicKey, 1);
+  return plaintext;
+}
+
+function previewPublicKey(publicKeyBase64: string): string {
+  if (publicKeyBase64.length <= 12) {
+    return publicKeyBase64;
+  }
+  return `${publicKeyBase64.substring(0, 12)}...`;
+}
+
+function encodeQueryValue(value: string): string {
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const isAlpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const isDigit = code >= 48 && code <= 57;
+    const isSafe = isAlpha || isDigit || value[index] === '-' || value[index] === '_' || value[index] === '.' || value[index] === '~';
+    if (isSafe) {
+      result += value[index];
+    } else {
+      result += `%${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return result;
 }
 
 function createAuthChallenge(secret: Uint8Array): AuthChallenge {

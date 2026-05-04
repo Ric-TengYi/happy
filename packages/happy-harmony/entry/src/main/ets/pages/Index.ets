@@ -2,6 +2,8 @@ import { common } from '@kit.AbilityKit';
 import {
   AuthResult,
   Credentials,
+  TerminalAuthResult,
+  approveTerminalAuthUrl,
   createAccount,
   formatBackupSecret,
   getDefaultServerUrl,
@@ -23,6 +25,8 @@ struct Index {
   @State private accountStatus: string = '正在读取登录状态...';
   @State private restoreSecret: string = '';
   @State private backupSecret: string = '';
+  @State private terminalQrText: string = '';
+  @State private terminalAuthStatus: string = '';
   @State private isAuthenticated: boolean = false;
   @State private hasStateLoadError: boolean = false;
   @State private isLoadingState: boolean = true;
@@ -133,6 +137,35 @@ struct Index {
             .width('100%')
         }
 
+        Text('终端授权')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .width('100%')
+
+        TextArea({ text: this.terminalQrText, placeholder: '粘贴 happy://terminal?... 内容' })
+          .width('100%')
+          .height(92)
+          .backgroundColor(Color.White)
+          .onChange((value: string) => {
+            this.terminalQrText = value;
+          })
+
+        Button(this.authAction === 'terminalAuth' ? '授权中...' : '授权终端')
+          .width('100%')
+          .height(44)
+          .enabled(!this.isBusy())
+          .onClick(() => {
+            this.approveTerminalAuth();
+          })
+
+        if (this.terminalAuthStatus.length > 0) {
+          Text(this.terminalAuthStatus)
+            .fontSize(13)
+            .fontColor('#5F6368')
+            .width('100%')
+        }
+
         Button(this.authAction === 'logout' ? '退出中...' : '退出登录')
           .width('100%')
           .height(44)
@@ -190,6 +223,7 @@ struct Index {
     this.hasStateLoadError = false;
     this.accountStatus = '正在读取登录状态...';
     this.backupSecret = '';
+    this.terminalAuthStatus = '';
     this.status = '正在读取登录状态...';
     try {
       const context = this.getAbilityContext();
@@ -206,6 +240,7 @@ struct Index {
       console.error(`读取登录状态失败：${error}`);
       this.isAuthenticated = false;
       this.backupSecret = '';
+      this.terminalAuthStatus = '';
       this.accountStatus = '登录状态读取失败';
       this.hasStateLoadError = true;
       this.status = '读取登录状态失败，请稍后重试';
@@ -352,10 +387,58 @@ struct Index {
     try {
       await logout(this.getAbilityContext());
       this.backupSecret = '';
+      this.terminalQrText = '';
+      this.terminalAuthStatus = '';
       this.markUnauthenticated('已退出登录，服务器配置已保留');
     } catch (error) {
       console.error(`退出登录失败：${error}`);
       this.status = '退出登录失败，请稍后重试';
+    } finally {
+      this.authAction = '';
+    }
+  }
+
+  private approveTerminalAuth(): void {
+    if (this.isBusy()) {
+      return;
+    }
+    const url = this.serverUrl.trim();
+    const error = validateServerUrl(url);
+    if (error) {
+      this.status = error;
+      return;
+    }
+    const authUrl = this.terminalQrText.trim();
+    if (authUrl.length === 0) {
+      this.terminalAuthStatus = '请先粘贴终端二维码内容';
+      this.status = '请先粘贴终端二维码内容';
+      return;
+    }
+
+    this.authAction = 'terminalAuth';
+    this.terminalAuthStatus = '正在授权终端...';
+    this.status = '正在授权终端...';
+    this.approveTerminalAuthAsync(url, authUrl);
+  }
+
+  private async approveTerminalAuthAsync(url: string, authUrl: string): Promise<void> {
+    try {
+      const result: TerminalAuthResult = await approveTerminalAuthUrl(this.getAbilityContext(), url, authUrl);
+      this.terminalQrText = '';
+      if (result.status === 'approved') {
+        this.terminalAuthStatus = `终端授权成功：${result.publicKeyPreview}`;
+        this.status = '终端授权成功，请回到 CLI 查看连接状态';
+      } else if (result.status === 'already_authorized') {
+        this.terminalAuthStatus = `该终端已授权：${result.publicKeyPreview}`;
+        this.status = '该终端已授权';
+      } else {
+        this.terminalAuthStatus = `未找到待授权终端：${result.publicKeyPreview}`;
+        this.status = '未找到待授权终端，请在 CLI 重新生成二维码';
+      }
+    } catch (error) {
+      console.error(`终端授权失败：${error}`);
+      this.terminalAuthStatus = `终端授权失败：${this.toUserError(error, '请检查二维码内容、服务器和网络', true)}`;
+      this.status = this.terminalAuthStatus;
     } finally {
       this.authAction = '';
     }
@@ -379,8 +462,11 @@ struct Index {
     return this.isLoadingState || this.isValidating || this.authAction.length > 0;
   }
 
-  private toUserError(error: Object, fallback: string): string {
+  private toUserError(error: Object, fallback: string, allowAuthUrlHint: boolean = false): string {
     const message = `${error}`.replace(/^Error:\s*/, '');
+    if (allowAuthUrlHint && message.indexOf('happy://terminal?') >= 0) {
+      return message;
+    }
     if (message.length > 0 && !/[A-Za-z]/.test(message)) {
       return message;
     }
