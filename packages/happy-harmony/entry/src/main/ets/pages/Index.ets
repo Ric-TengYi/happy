@@ -1385,6 +1385,8 @@ struct Index {
 
   private async refreshControlPlaneDataAsync(generation: number, serverUrl: string): Promise<void> {
     try {
+      const previousSessions = this.sessions;
+      const selectedSessionId = this.selectedSessionId;
       const snapshot: ControlPlaneSnapshot = await loadControlPlaneSnapshot(this.getAbilityContext(), serverUrl);
       if (!this.isCurrentSync(generation)) {
         return;
@@ -1393,6 +1395,10 @@ struct Index {
       this.sessions = snapshot.sessions;
       this.dropSelectedSessionIfMissing();
       this.syncStatus = snapshot.decodeWarningCount > 0 ? `同步完成，${snapshot.decodeWarningCount} 个字段解密失败` : '同步完成';
+      if (this.shouldRefreshSelectedSessionMessagesAfterSync(previousSessions, snapshot.sessions, selectedSessionId)) {
+        this.messageStatus = '会话状态已更新，正在读取消息...';
+        this.refreshSelectedSessionMessages();
+      }
     } catch (error) {
       if (!this.isCurrentSync(generation)) {
         return;
@@ -1579,6 +1585,31 @@ struct Index {
     }
     this.sessions = sessions;
     this.syncStatus = event.thinking ? '会话正在思考' : '会话状态已实时更新';
+  }
+
+  private shouldRefreshSelectedSessionMessagesAfterSync(
+    previousSessions: HappySession[],
+    nextSessions: HappySession[],
+    selectedSessionId: string,
+  ): boolean {
+    if (selectedSessionId.length === 0 || this.selectedSessionId !== selectedSessionId) {
+      return false;
+    }
+    const previous = this.findSessionInList(previousSessions, selectedSessionId);
+    const next = this.findSessionInList(nextSessions, selectedSessionId);
+    if (!previous || !next) {
+      return false;
+    }
+    return previous.agentStateVersion !== next.agentStateVersion;
+  }
+
+  private findSessionInList(sessions: HappySession[], sessionId: string): HappySession | null {
+    for (const session of sessions) {
+      if (session.id === sessionId) {
+        return session;
+      }
+    }
+    return null;
   }
 
   private openSessionDetail(sessionId: string): void {

@@ -138,6 +138,24 @@ export function applyRealtimeEvent(snapshot: RealtimeSnapshot, event: RealtimeEv
   return { snapshot, needsRefresh: false };
 }
 
+export function shouldRefreshSelectedSessionMessages(
+  previousSessions: RealtimeSession[],
+  nextSessions: RealtimeSession[],
+  selectedSessionId: string,
+): boolean {
+  if (selectedSessionId.length === 0) {
+    return false;
+  }
+
+  const previous = previousSessions.find((session) => session.id === selectedSessionId);
+  const next = nextSessions.find((session) => session.id === selectedSessionId);
+  if (!previous || !next) {
+    return false;
+  }
+
+  return previous.agentStateVersion !== next.agentStateVersion;
+}
+
 function patchMachineActivity(
   snapshot: RealtimeSnapshot,
   event: ApiMachineActivityEvent,

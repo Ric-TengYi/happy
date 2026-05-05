@@ -4,6 +4,7 @@ import {
   buildSocketIoAuthPacket,
   buildSocketIoWebSocketUrl,
   parseSocketIoPacket,
+  shouldRefreshSelectedSessionMessages,
   type RealtimeSnapshot,
 } from './realtimeSync';
 
@@ -107,5 +108,44 @@ describe('realtime sync protocol helpers', () => {
       needsRefresh: true,
       reason: 'reconnect-catch-up',
     });
+  });
+
+  it('requests selected session message refresh after encrypted session state changes', () => {
+    const nextSnapshot: RealtimeSnapshot = {
+      machines: snapshot.machines,
+      sessions: [
+        {
+          ...snapshot.sessions[0],
+          updatedAt: 9000,
+          agentStateVersion: 1,
+          agentState: { requests: { approval_1: { tool: 'CodexBash' } } },
+        },
+      ],
+    };
+
+    expect(shouldRefreshSelectedSessionMessages(
+      snapshot.sessions,
+      nextSnapshot.sessions,
+      'session-1',
+    )).toBe(true);
+  });
+
+  it('does not request selected session message refresh for plain activity metadata changes', () => {
+    const nextSnapshot: RealtimeSnapshot = {
+      machines: snapshot.machines,
+      sessions: [
+        {
+          ...snapshot.sessions[0],
+          updatedAt: 9000,
+          metadataVersion: 2,
+        },
+      ],
+    };
+
+    expect(shouldRefreshSelectedSessionMessages(
+      snapshot.sessions,
+      nextSnapshot.sessions,
+      'session-1',
+    )).toBe(false);
   });
 });
