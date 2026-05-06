@@ -71,4 +71,14 @@ describe('createSessionMetadata', () => {
 
         expect(metadata.dangerouslySkipPermissions).toBe(true);
     });
+
+    it('sets metadata.name when a session name is provided', () => {
+        const { metadata } = createSessionMetadata({
+            flavor: 'codex',
+            machineId: 'machine-6',
+            name: '修复 Harmony 会话列表',
+        });
+
+        expect(metadata.name).toBe('修复 Harmony 会话列表');
+    });
 });

@@ -75,6 +75,33 @@ interface DaemonToServerEvents {
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     resumeSession?: (sessionId: string, options?: { model?: string; permissionMode?: string }) => Promise<SpawnSessionResult>;
+    listDirectories?: (options: {
+        path?: string | null;
+        showHidden?: boolean | null;
+        limit?: number | null;
+    }) => Promise<{
+        path: string;
+        parentPath: string | null;
+        entries: Array<{
+            name: string;
+            path: string;
+            type: 'directory';
+            hidden: boolean;
+        }>;
+        truncated: boolean;
+    }>;
+    listCodexThreads?: (options?: {
+        cursor?: string | null;
+        limit?: number | null;
+        cwd?: string | null;
+        searchTerm?: string | null;
+        archived?: boolean | null;
+    }) => Promise<{
+        threads: Array<Record<string, unknown>>;
+        nextCursor: string | null;
+        backwardsCursor: string | null;
+    }>;
+    attachCodexThread?: (options: { threadId: string; cwd?: string | null; threadName?: string | null }) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => boolean;
     requestShutdown: () => void;
 }
@@ -106,6 +133,9 @@ export class ApiMachineClient {
     setRPCHandlers({
         spawnSession,
         resumeSession,
+        listDirectories,
+        listCodexThreads,
+        attachCodexThread,
         stopSession,
         requestShutdown
     }: MachineRpcHandlers) {
@@ -137,6 +167,51 @@ export class ApiMachineClient {
         });
 
         this.syncResumeSessionRpcRegistration();
+
+        if (listDirectories) {
+            this.rpcHandlerManager.registerHandler('directory-list', async (params: any) => {
+                return await listDirectories({
+                    path: typeof params?.path === 'string' ? params.path : null,
+                    showHidden: typeof params?.showHidden === 'boolean' ? params.showHidden : false,
+                    limit: typeof params?.limit === 'number' ? params.limit : null,
+                });
+            });
+        }
+
+        if (listCodexThreads) {
+            this.rpcHandlerManager.registerHandler('codex-thread-list', async (params: any) => {
+                return await listCodexThreads({
+                    cursor: typeof params?.cursor === 'string' ? params.cursor : null,
+                    limit: typeof params?.limit === 'number' ? params.limit : null,
+                    cwd: typeof params?.cwd === 'string' ? params.cwd : null,
+                    searchTerm: typeof params?.searchTerm === 'string' ? params.searchTerm : null,
+                    archived: typeof params?.archived === 'boolean' ? params.archived : false,
+                });
+            });
+        }
+
+        if (attachCodexThread) {
+            this.rpcHandlerManager.registerHandler('codex-thread-attach', async (params: any) => {
+                const threadId = typeof params?.threadId === 'string' ? params.threadId.trim() : '';
+                if (threadId.length === 0) {
+                    throw new Error('Codex thread ID is required');
+                }
+
+                const result = await attachCodexThread({
+                    threadId,
+                    cwd: typeof params?.cwd === 'string' ? params.cwd : null,
+                    threadName: typeof params?.threadName === 'string' ? params.threadName.trim() : null,
+                });
+                switch (result.type) {
+                    case 'success':
+                        return { type: 'success', sessionId: result.sessionId };
+                    case 'requestToApproveDirectoryCreation':
+                        return result;
+                    case 'error':
+                        throw new Error(result.errorMessage);
+                }
+            });
+        }
 
         // Register stop session handler
         this.rpcHandlerManager.registerHandler('stop-session', (params: any) => {

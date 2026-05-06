@@ -60,6 +60,26 @@ export type ApprovalHandler = (params: {
     message?: string;
 }) => Promise<ReviewDecision>;
 
+export type CodexThreadListParams = {
+    cursor?: string | null;
+    limit?: number | null;
+    sortKey?: 'created_at' | 'updated_at' | null;
+    sortDirection?: 'asc' | 'desc' | null;
+    archived?: boolean | null;
+    cwd?: string | null;
+    searchTerm?: string | null;
+};
+
+export type CodexThreadListResponse = {
+    data: Array<Record<string, any>>;
+    nextCursor: string | null;
+    backwardsCursor: string | null;
+};
+
+export type CodexThreadReadResponse = {
+    thread: Record<string, any>;
+};
+
 /**
  * Check that `codex app-server` is available.
  */
@@ -577,7 +597,7 @@ export class CodexAppServerClient {
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string }> {
+    }): Promise<{ threadId: string; model: string; name?: string | null }> {
         const params: NewConversationParams = {
             model: opts.model ?? null,
             modelProvider: null,
@@ -599,7 +619,11 @@ export class CodexAppServerClient {
         this._turnId = null;
         this.rememberThreadDefaults(opts);
         logger.debug('[CodexAppServer] Thread started:', this._threadId);
-        return { threadId: result.thread.id, model: result.model };
+        return {
+            threadId: result.thread.id,
+            model: result.model,
+            name: typeof result.thread.name === 'string' ? result.thread.name : null,
+        };
     }
 
     async resumeThread(opts?: {
@@ -641,6 +665,26 @@ export class CodexAppServerClient {
         });
         logger.debug('[CodexAppServer] Thread resumed:', this._threadId);
         return { threadId: result.thread.id, model: result.model };
+    }
+
+    async listThreads(opts: CodexThreadListParams = {}): Promise<CodexThreadListResponse> {
+        const params = {
+            limit: opts.limit ?? 20,
+            cursor: opts.cursor ?? null,
+            sortKey: opts.sortKey ?? 'updated_at',
+            sortDirection: opts.sortDirection ?? 'desc',
+            archived: opts.archived ?? false,
+            cwd: opts.cwd ?? null,
+            searchTerm: opts.searchTerm ?? null,
+        };
+        return await this.request('thread/list', params) as CodexThreadListResponse;
+    }
+
+    async readThread(opts: { threadId: string; includeTurns?: boolean }): Promise<CodexThreadReadResponse> {
+        return await this.request('thread/read', {
+            threadId: opts.threadId,
+            includeTurns: opts.includeTurns ?? true,
+        }) as CodexThreadReadResponse;
     }
 
     async reconnectAndResumeThread(): Promise<boolean> {

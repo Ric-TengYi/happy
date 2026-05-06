@@ -404,11 +404,47 @@ export function createOptimisticUserMessage(localId: string, text: string, creat
 }
 
 export function encryptSessionRawPayload(value: Object, session: HappySession, credentials: Credentials): string {
-  const cipher = resolveRecordCipher(session.dataEncryptionKey, credentials);
+  return encryptRawPayload(value, session.dataEncryptionKey, credentials, '会话密钥不可用');
+}
+
+export function encryptRawPayload(
+  value: Object,
+  dataEncryptionKey: string | null,
+  credentials: Credentials,
+  missingKeyMessage: string = '数据密钥不可用',
+): string {
+  const cipher = resolveRecordCipher(dataEncryptionKey, credentials);
   if (!cipher) {
-    throw new Error('会话密钥不可用');
+    throw new Error(missingKeyMessage);
   }
   return encryptRawJson(value, cipher);
+}
+
+export function decryptRawPayload(
+  encryptedText: string,
+  dataEncryptionKey: string | null,
+  credentials: Credentials,
+  missingKeyMessage: string = '数据密钥不可用',
+): Object {
+  const cipher = resolveRecordCipher(dataEncryptionKey, credentials);
+  if (!cipher) {
+    throw new Error(missingKeyMessage);
+  }
+  try {
+    const encryptedBytes = decodeBase64(encryptedText);
+    const plain = cipher.isDataKey ? decryptAesGcm(encryptedBytes, cipher.key) : decryptSecretBox(encryptedBytes, cipher.key);
+    if (!plain) {
+      throw new Error('解密结果为空');
+    }
+    const parsed = JSON.parse(bytesToUtf8String(plain)) as Object;
+    if (typeof parsed === 'object' && parsed !== null) {
+      return parsed;
+    }
+    throw new Error('解密结果格式不正确');
+  } catch (error) {
+    console.error(`数据解密失败：${error}`);
+    throw new Error('数据解密失败');
+  }
 }
 
 export function createLocalMessageId(): string {
@@ -437,18 +473,36 @@ function buildRawUserTextRecord(text: string, modeMeta: MessageModeMeta): RawUse
 
 function resolveMessageModeMeta(session: HappySession): MessageModeMeta {
   const explicitPermissionMode = normalizeOptionalText(session.permissionMode);
-  const permissionMode = explicitPermissionMode.length > 0 && explicitPermissionMode !== 'default'
-    ? explicitPermissionMode
-    : (isSessionSandboxEnabled(session) ? 'bypassPermissions' : 'default');
+  let permissionMode = 'default';
+  if (explicitPermissionMode.length > 0) {
+    permissionMode = explicitPermissionMode;
+  } else {
+    const metadataPermissionMode = normalizeOptionalText(session.metadata?.currentOperatingModeCode);
+    permissionMode = isMessagePermissionMode(metadataPermissionMode)
+      ? metadataPermissionMode
+      : (isSessionSandboxEnabled(session) ? 'bypassPermissions' : 'default');
+  }
   const modelMode = normalizeOptionalText(session.modelMode);
+  const metadataModelMode = normalizeOptionalText(session.metadata?.currentModelCode);
   return {
     permissionMode,
-    model: modelMode.length > 0 && modelMode !== 'default' ? modelMode : null,
+    model: modelMode.length > 0
+      ? (modelMode !== 'default' ? modelMode : null)
+      : (metadataModelMode.length > 0 && metadataModelMode !== 'default' ? metadataModelMode : null),
   };
 }
 
 function isSessionSandboxEnabled(session: HappySession): boolean {
   return session.metadata?.sandbox?.enabled === true;
+}
+
+function isMessagePermissionMode(value: string): boolean {
+  return value === 'acceptEdits'
+    || value === 'bypassPermissions'
+    || value === 'plan'
+    || value === 'read-only'
+    || value === 'safe-yolo'
+    || value === 'yolo';
 }
 
 export function getMessageRoleLabel(message: HappyMessage): string {

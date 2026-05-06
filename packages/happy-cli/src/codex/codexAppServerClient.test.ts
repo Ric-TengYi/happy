@@ -185,6 +185,97 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(client.sandboxEnabled).toBe(false);
     });
 
+    it('lists and reads Codex threads through app-server v2 history RPCs', async () => {
+        const requests: MockRpcMessage[] = [];
+        const proc = createMockProcess({
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+
+                if (msg.method === 'thread/list' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                data: [{
+                                    id: 'thread-1',
+                                    name: 'Existing Codex thread',
+                                    preview: 'hello',
+                                    cwd: '/tmp/project',
+                                    updatedAt: 123,
+                                    turns: [],
+                                }],
+                                nextCursor: null,
+                                backwardsCursor: null,
+                            },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'thread/read' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: {
+                                    id: 'thread-1',
+                                    name: 'Existing Codex thread',
+                                    preview: 'hello',
+                                    cwd: '/tmp/project',
+                                    updatedAt: 123,
+                                    turns: [{
+                                        id: 'turn-1',
+                                        items: [{ type: 'agentMessage', id: 'agent-1', text: 'done', phase: 'final_answer', memoryCitation: null }],
+                                        status: { type: 'completed' },
+                                        error: null,
+                                        startedAt: 123,
+                                        completedAt: 124,
+                                        durationMs: 1000,
+                                    }],
+                                },
+                            },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+
+        const list = await client.listThreads({
+            limit: 10,
+            cwd: '/tmp/project',
+            archived: false,
+            searchTerm: 'Existing',
+        });
+        const read = await client.readThread({ threadId: 'thread-1', includeTurns: true });
+
+        expect(list.data).toHaveLength(1);
+        expect(list.data[0]).toEqual(expect.objectContaining({
+            id: 'thread-1',
+            name: 'Existing Codex thread',
+            cwd: '/tmp/project',
+        }));
+        expect(read.thread.turns).toHaveLength(1);
+        expect(requests.find((msg) => msg.method === 'thread/list')?.params).toEqual({
+            limit: 10,
+            cursor: null,
+            sortKey: 'updated_at',
+            sortDirection: 'desc',
+            archived: false,
+            cwd: '/tmp/project',
+            searchTerm: 'Existing',
+        });
+        expect(requests.find((msg) => msg.method === 'thread/read')?.params).toEqual({
+            threadId: 'thread-1',
+            includeTurns: true,
+        });
+
+        await client.disconnect();
+    });
+
     it('appends rollout log filter to existing RUST_LOG', async () => {
         process.env.RUST_LOG = 'info,codex_core=warn';
         const { CodexAppServerClient } = await import('./codexAppServerClient');

@@ -366,11 +366,15 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    private enqueueMessage(content: unknown, invalidate: boolean = true) {
+    async flushPendingMessages(): Promise<void> {
+        await this.sendSync.invalidateAndAwait();
+    }
+
+    private enqueueMessage(content: unknown, invalidate: boolean = true, localId: string = randomUUID()) {
         const encrypted = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, content));
         this.pendingOutbox.push({
             content: encrypted,
-            localId: randomUUID()
+            localId
         });
         if (invalidate) {
             this.sendSync.invalidate();
@@ -430,7 +434,10 @@ export class ApiSessionClient extends EventEmitter {
         this.enqueueMessage(content);
     }
 
-    private enqueueSessionProtocolEnvelope(envelope: SessionEnvelope, invalidate: boolean = true) {
+    private enqueueSessionProtocolEnvelope(
+        envelope: SessionEnvelope,
+        options: { invalidate?: boolean; localId?: string } = {},
+    ) {
         const content = {
             role: 'session',
             content: envelope,
@@ -439,21 +446,21 @@ export class ApiSessionClient extends EventEmitter {
             }
         };
 
-        this.enqueueMessage(content, invalidate);
+        this.enqueueMessage(content, options.invalidate ?? true, options.localId);
     }
 
-    sendSessionProtocolMessage(envelope: SessionEnvelope) {
+    sendSessionProtocolMessage(envelope: SessionEnvelope, options: { invalidate?: boolean; localId?: string } = {}) {
         if (envelope.role !== 'user') {
-            this.enqueueSessionProtocolEnvelope(envelope);
+            this.enqueueSessionProtocolEnvelope(envelope, options);
             return;
         }
 
         if (envelope.ev.t !== 'text') {
-            this.enqueueSessionProtocolEnvelope(envelope);
+            this.enqueueSessionProtocolEnvelope(envelope, options);
             return;
         }
 
-        this.enqueueSessionProtocolEnvelope(envelope);
+        this.enqueueSessionProtocolEnvelope(envelope, options);
     }
 
     /**

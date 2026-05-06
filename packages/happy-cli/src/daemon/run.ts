@@ -28,6 +28,8 @@ import { detectCLIAvailability } from '@/utils/detectCLI';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
+import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import { listDirectoryEntriesForPicker } from './directoryBrowser';
 
 // Prepare initial metadata
 // Suffix host with `-dev` for the HAPPY_VARIANT=dev variant so the dev daemon
@@ -622,6 +624,124 @@ export async function startDaemon(): Promise<void> {
       }
     };
 
+    const normalizeCodexThreadSummary = (thread: Record<string, any>): Record<string, unknown> => ({
+      id: typeof thread.id === 'string' ? thread.id : '',
+      name: typeof thread.name === 'string' ? thread.name : null,
+      preview: typeof thread.preview === 'string' ? thread.preview : '',
+      cwd: typeof thread.cwd === 'string' ? thread.cwd : '',
+      path: typeof thread.path === 'string' ? thread.path : null,
+      createdAt: typeof thread.createdAt === 'number' ? thread.createdAt : null,
+      updatedAt: typeof thread.updatedAt === 'number' ? thread.updatedAt : null,
+      source: thread.source ?? null,
+      modelProvider: typeof thread.modelProvider === 'string' ? thread.modelProvider : null,
+      cliVersion: typeof thread.cliVersion === 'string' ? thread.cliVersion : null,
+    });
+
+    const listCodexThreads = async (options?: {
+      cursor?: string | null;
+      limit?: number | null;
+      cwd?: string | null;
+      searchTerm?: string | null;
+      archived?: boolean | null;
+    }): Promise<{
+      threads: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+      backwardsCursor: string | null;
+    }> => {
+      const client = new CodexAppServerClient();
+      try {
+        await client.connect();
+        const response = await client.listThreads({
+          cursor: options?.cursor ?? null,
+          limit: options?.limit ?? 20,
+          cwd: options?.cwd ?? null,
+          searchTerm: options?.searchTerm ?? null,
+          archived: options?.archived ?? false,
+        });
+        return {
+          threads: response.data.map(normalizeCodexThreadSummary).filter(thread => typeof thread.id === 'string' && thread.id.length > 0),
+          nextCursor: response.nextCursor,
+          backwardsCursor: response.backwardsCursor,
+        };
+      } finally {
+        await client.disconnect();
+      }
+    };
+
+    const resolveCodexThreadLaunchInfo = async (
+      threadId: string,
+      requestedCwd?: string | null,
+      requestedThreadName?: string | null,
+    ): Promise<{ cwd: string; threadName: string | null }> => {
+      let cwd = requestedCwd && requestedCwd.trim().length > 0 ? requestedCwd.trim() : '';
+      let threadName = requestedThreadName && requestedThreadName.trim().length > 0 ? requestedThreadName.trim() : '';
+      if (cwd.length > 0 && threadName.length > 0) {
+        return { cwd, threadName };
+      }
+
+      const client = new CodexAppServerClient();
+      try {
+        await client.connect();
+        const response = await client.readThread({ threadId, includeTurns: false });
+        const latestCwd = response.thread?.cwd;
+        if (cwd.length === 0 && typeof latestCwd === 'string' && latestCwd.length > 0) {
+          cwd = latestCwd;
+        }
+        const latestName = response.thread?.name;
+        if (threadName.length === 0 && typeof latestName === 'string' && latestName.trim().length > 0) {
+          threadName = latestName.trim();
+        }
+      } catch (error) {
+        logger.debug(`[DAEMON RUN] Failed to read Codex thread info for ${threadId}: ${error instanceof Error ? error.message : error}`);
+      } finally {
+        await client.disconnect();
+      }
+
+      return { cwd: cwd.length > 0 ? cwd : os.homedir(), threadName: threadName.length > 0 ? threadName : null };
+    };
+
+    const attachCodexThread = async (options: { threadId: string; cwd?: string | null; threadName?: string | null }): Promise<SpawnSessionResult> => {
+      try {
+        const launchInfo = await resolveCodexThreadLaunchInfo(options.threadId, options.cwd, options.threadName);
+        let cwd = launchInfo.cwd;
+        try {
+          await fs.access(cwd);
+        } catch {
+          logger.debug(`[DAEMON RUN] Codex thread cwd is not accessible, falling back to home: ${cwd}`);
+          cwd = os.homedir();
+        }
+
+        return spawnTrackedHappyProcess({
+          args: [
+            'codex',
+            '--resume', options.threadId,
+            '--happy-starting-mode', 'remote',
+            '--started-by', 'daemon',
+          ],
+          cwd,
+          env: {
+            ...process.env,
+            ...(launchInfo.threadName ? { HAPPY_CODEX_THREAD_NAME: launchInfo.threadName } : {}),
+          },
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.debug(`[DAEMON RUN] Failed to attach Codex thread: ${errorMessage}`);
+        return {
+          type: 'error',
+          errorMessage: `Failed to attach Codex thread: ${errorMessage}`,
+        };
+      }
+    };
+
+    const listDirectories = async (options?: { path?: string | null; showHidden?: boolean | null; limit?: number | null }) => {
+      return listDirectoryEntriesForPicker({
+        path: options?.path ?? os.homedir(),
+        showHidden: options?.showHidden === true,
+        limit: options?.limit ?? 100,
+      });
+    };
+
     const resumeSession = async (happySessionId: string, options?: { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> => {
       try {
         const tracked = findTrackedSessionById(happySessionId);
@@ -796,6 +916,9 @@ export async function startDaemon(): Promise<void> {
     apiMachine.setRPCHandlers({
       spawnSession,
       resumeSession,
+      listDirectories,
+      listCodexThreads,
+      attachCodexThread,
       stopSession,
       requestShutdown: () => requestShutdown('happy-app')
     });

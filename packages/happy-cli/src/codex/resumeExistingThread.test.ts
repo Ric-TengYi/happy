@@ -8,6 +8,7 @@ describe('resumeExistingThread', () => {
             resumeThread: vi.fn().mockResolvedValue({
                 threadId: '019ccca2-1a77-7481-9873-de72f3464372',
                 model: 'gpt-5.4',
+                name: 'Existing Codex thread',
             }),
         };
         const metadataHandlers: Array<(metadata: any) => any> = [];
@@ -31,6 +32,7 @@ describe('resumeExistingThread', () => {
         expect(result).toEqual({
             threadId: '019ccca2-1a77-7481-9873-de72f3464372',
             model: 'gpt-5.4',
+            name: 'Existing Codex thread',
         });
         expect(client.resumeThread).toHaveBeenCalledWith({
             threadId: '019ccca2-1a77-7481-9873-de72f3464372',
@@ -41,6 +43,7 @@ describe('resumeExistingThread', () => {
         expect(metadataHandlers[0]({ existing: true })).toEqual({
             existing: true,
             codexThreadId: '019ccca2-1a77-7481-9873-de72f3464372',
+            name: 'Existing Codex thread',
         });
         expect(messageBuffer.addMessage).toHaveBeenCalledWith(expect.stringContaining('Resumed thread'), 'status');
         expect(session.sendSessionEvent).toHaveBeenCalledWith({

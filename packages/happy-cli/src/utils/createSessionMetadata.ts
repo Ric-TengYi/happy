@@ -29,6 +29,8 @@ export interface CreateSessionMetadataOptions {
     flavor: BackendFlavor;
     /** Machine ID for server identification */
     machineId: string;
+    /** Optional user-visible session name. */
+    name?: string;
     /** How the session was started */
     startedBy?: 'daemon' | 'terminal';
     /** Active sandbox config for the session, or undefined when not used */
@@ -91,6 +93,11 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         sandbox: opts.sandbox?.enabled ? opts.sandbox : null,
         dangerouslySkipPermissions: opts.dangerouslySkipPermissions ?? null,
     };
+
+    const name = opts.name?.trim();
+    if (name && name.length > 0) {
+        metadata.name = name;
+    }
 
     return { state, metadata };
 }

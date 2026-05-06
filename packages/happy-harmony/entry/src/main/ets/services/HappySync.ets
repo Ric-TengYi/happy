@@ -96,8 +96,14 @@ export interface SessionMetadata {
   machineId?: string;
   homeDir?: string;
   flavor?: string | null;
+  codexThreadId?: string;
+  lifecycleState?: string;
+  lifecycleStateSince?: number;
+  archivedBy?: string;
+  archiveReason?: string;
   sandbox?: SessionSandboxMetadata | null;
   currentOperatingModeCode?: string;
+  currentModelCode?: string;
   summary?: SessionSummary;
 }
 
@@ -131,6 +137,7 @@ export interface HappySession {
   dataEncryptionKey: string | null;
   permissionMode?: string | null;
   modelMode?: string | null;
+  effortLevel?: string | null;
 }
 
 export interface ControlPlaneSnapshot {
@@ -217,13 +224,13 @@ export function getMachineSubtitle(machine: HappyMachine): string {
 }
 
 export function getSessionTitle(session: HappySession): string {
-  const summary = normalizeOptionalText(session.metadata?.summary?.text);
-  if (summary.length > 0) {
-    return summary;
-  }
   const name = normalizeOptionalText(session.metadata?.name);
   if (name.length > 0) {
     return name;
+  }
+  const summary = normalizeOptionalText(session.metadata?.summary?.text);
+  if (summary.length > 0) {
+    return summary;
   }
   const path = normalizeOptionalText(session.metadata?.path);
   if (path.length > 0) {
@@ -236,12 +243,29 @@ export function getSessionTitle(session: HappySession): string {
   return session.id;
 }
 
+export function buildSessionArchiveMetadata(metadata: SessionMetadata | null, now: number = Date.now()): SessionMetadata {
+  const nextMetadata: SessionMetadata = metadata ? JSON.parse(JSON.stringify(metadata)) as SessionMetadata : {};
+  nextMetadata.lifecycleState = 'archiveRequested';
+  nextMetadata.lifecycleStateSince = now;
+  nextMetadata.archivedBy = 'harmony';
+  nextMetadata.archiveReason = 'User archived from Harmony';
+  return nextMetadata;
+}
+
+export function isSessionArchived(session: HappySession): boolean {
+  const lifecycleState = normalizeOptionalText(session.metadata?.lifecycleState);
+  return lifecycleState === 'archiveRequested' || lifecycleState === 'archived';
+}
+
 export function getSessionSubtitle(session: HappySession): string {
   if (session.thinking) {
     return '思考中';
   }
   const host = normalizeOptionalText(session.metadata?.host);
-  const path = normalizeOptionalText(session.metadata?.path);
+  const path = formatSessionPath(
+    normalizeOptionalText(session.metadata?.path),
+    normalizeOptionalText(session.metadata?.homeDir),
+  );
   if (host.length > 0 && path.length > 0) {
     return `${host} · ${path}`;
   }
@@ -249,6 +273,22 @@ export function getSessionSubtitle(session: HappySession): string {
     return path;
   }
   return session.active ? '会话在线' : formatRelativeTime(session.activeAt);
+}
+
+export function formatSessionPath(path: string, homeDir: string = ''): string {
+  let displayPath = path.trim();
+  if (displayPath.length === 0) {
+    return '';
+  }
+
+  const normalizedHome = trimTrailingSlash(homeDir.trim());
+  if (normalizedHome.length > 0 && (displayPath === normalizedHome || displayPath.startsWith(`${normalizedHome}/`))) {
+    displayPath = displayPath === normalizedHome ? '~' : `~/${displayPath.slice(normalizedHome.length + 1)}`;
+  } else {
+    displayPath = abbreviateDetectedHomePath(displayPath);
+  }
+
+  return shortenPathTail(displayPath);
 }
 
 export function getControlPlaneSummary(snapshot: ControlPlaneCounts): string {
@@ -274,6 +314,57 @@ function decryptMachine(row: MachineWire, credentials: Credentials, decodeStats:
     daemonStateVersion: row.daemonStateVersion ?? 0,
     dataEncryptionKey: row.dataEncryptionKey ?? null,
   };
+}
+
+function trimTrailingSlash(value: string): string {
+  let result = value;
+  while (result.length > 1 && result.endsWith('/')) {
+    result = result.slice(0, result.length - 1);
+  }
+  return result;
+}
+
+function abbreviateDetectedHomePath(path: string): string {
+  const userHome = abbreviateHomePrefix(path, '/Users/');
+  if (userHome !== path) {
+    return userHome;
+  }
+  return abbreviateHomePrefix(path, '/home/');
+}
+
+function abbreviateHomePrefix(path: string, root: string): string {
+  if (!path.startsWith(root)) {
+    return path;
+  }
+  const rest = path.slice(root.length);
+  const slashIndex = rest.indexOf('/');
+  if (slashIndex < 0) {
+    return rest.length > 0 ? '~' : path;
+  }
+  const username = rest.slice(0, slashIndex);
+  if (username.length === 0) {
+    return path;
+  }
+  const prefix = `${root}${username}`;
+  return path === prefix ? '~' : `~/${path.slice(prefix.length + 1)}`;
+}
+
+function shortenPathTail(path: string): string {
+  const prefix = path.startsWith('~/') ? '~/' : path.startsWith('/') ? '/' : '';
+  const body = prefix.length > 0 ? path.slice(prefix.length) : path;
+  const parts = body.split('/').filter((part: string): boolean => part.length > 0);
+  if (parts.length <= 3) {
+    return path;
+  }
+
+  const tail = `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+  if (prefix === '~/') {
+    return `~/.../${tail}`;
+  }
+  if (prefix === '/') {
+    return `/.../${tail}`;
+  }
+  return `.../${tail}`;
 }
 
 function decryptSession(row: SessionWire, credentials: Credentials, decodeStats: DecodeStats): HappySession {
