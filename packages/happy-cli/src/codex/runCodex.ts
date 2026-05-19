@@ -33,7 +33,7 @@ import { resolveCodexExecutionPolicy } from './executionPolicy';
 import { mapCodexMcpMessageToSessionEnvelopes, mapCodexProcessorMessageToSessionEnvelopes } from './utils/sessionProtocolMapper';
 import { resumeExistingThread } from './resumeExistingThread';
 import { emitReadyIfIdle } from './emitReadyIfIdle';
-import { mapCodexThreadToSessionProtocolMessages } from './historyImport';
+import { importCodexThreadHistoryBestEffort } from './importThreadHistory';
 
 /**
  * Extracts a human-readable error from a codex task_complete/turn_aborted event.
@@ -48,34 +48,6 @@ function describeCodexFailure(msg: any): string | null {
         return err.message;
     }
     return 'Unknown error';
-}
-
-async function importCodexThreadHistoryForResume(opts: {
-    client: CodexAppServerClient;
-    session: ApiSessionClient;
-    threadId: string;
-}): Promise<void> {
-    try {
-        const response = await opts.client.readThread({
-            threadId: opts.threadId,
-            includeTurns: true,
-        });
-        const imported = mapCodexThreadToSessionProtocolMessages(response.thread as any);
-        if (imported.length === 0) {
-            return;
-        }
-
-        for (const message of imported) {
-            opts.session.sendSessionProtocolMessage(message.envelope, {
-                localId: message.localId,
-                invalidate: false,
-            });
-        }
-        await opts.session.flushPendingMessages();
-    } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        logger.warn(`[codex] Failed to import Codex history for ${opts.threadId}: ${reason}`);
-    }
 }
 
 /**
@@ -660,7 +632,7 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect done');
 
         if (opts.resumeThreadId) {
-            await importCodexThreadHistoryForResume({
+            await importCodexThreadHistoryBestEffort({
                 client,
                 session,
                 threadId: opts.resumeThreadId,

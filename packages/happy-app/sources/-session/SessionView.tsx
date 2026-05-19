@@ -23,7 +23,7 @@ import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
-import { sessionAbort } from '@/sync/ops';
+import { machineSyncCodexThread, sessionAbort } from '@/sync/ops';
 import { storage, useIsDataReady, useLocalSetting, useLocalSettingMutable, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
@@ -65,6 +65,7 @@ export const SessionView = React.memo((props: { id: string }) => {
     const isTablet = useIsTablet();
     const { width: windowWidth } = useWindowDimensions();
     const [sessionActionsAnchor, setSessionActionsAnchor] = React.useState<SessionActionsAnchor | null>(null);
+    const [refreshingSession, setRefreshingSession] = React.useState(false);
     const fileDiffsSidebarEnabled = useSetting('fileDiffsSidebar');
 
     const showSidebar = fileDiffsSidebarEnabled
@@ -100,6 +101,35 @@ export const SessionView = React.memo((props: { id: string }) => {
         setSelectedFile((current) => (current?.fullPath === file.fullPath ? null : file));
     }, []);
     const clearSelectedFile = React.useCallback(() => setSelectedFile(null), []);
+    const handleRefreshSession = React.useCallback(async () => {
+        if (!session || refreshingSession) {
+            return;
+        }
+
+        setRefreshingSession(true);
+        try {
+            const machineId = session.metadata?.machineId;
+            const codexThreadId = session.metadata?.codexThreadId;
+            const isCodexSession = session.metadata?.flavor === 'codex' || !!codexThreadId;
+
+            if (isCodexSession && machineId && codexThreadId) {
+                const result = await machineSyncCodexThread({
+                    machineId,
+                    sessionId,
+                    threadId: codexThreadId,
+                });
+                if (result.type === 'error') {
+                    console.warn('Failed to sync Codex thread:', result.errorMessage);
+                    await sync.refreshSessionMessages(sessionId);
+                }
+            } else {
+                await sync.refreshSessionMessages(sessionId);
+            }
+            await sync.refreshSessions();
+        } finally {
+            setRefreshingSession(false);
+        }
+    }, [refreshingSession, session, sessionId]);
 
     // When sidebar is hidden or disabled, don't keep a stale selection.
     React.useEffect(() => {
@@ -201,6 +231,9 @@ export const SessionView = React.memo((props: { id: string }) => {
                             router.replace('/');
                         }}
                         onAvatarMenuRequest={Platform.OS === 'web' && session ? setSessionActionsAnchor : undefined}
+                        onRefreshPress={session ? handleRefreshSession : undefined}
+                        refreshDisabled={refreshingSession}
+                        refreshing={refreshingSession}
                         onSidebarTogglePress={showSidebar ? toggleSidebar : undefined}
                         sidebarCollapsed={sidebarCollapsed}
                     />

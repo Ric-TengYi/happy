@@ -147,6 +147,10 @@ export interface ResumeSessionOptions {
     sessionId: string;
 }
 
+export type CodexThreadSyncResult =
+    | { type: 'success'; threadId: string; imported: number }
+    | { type: 'error'; errorMessage: string };
+
 // Exported session operation functions
 
 /**
@@ -192,6 +196,32 @@ export async function machineResumeSession(options: ResumeSessionOptions & { mod
         return {
             type: 'error',
             errorMessage: error instanceof Error ? error.message : 'Failed to resume session',
+        };
+    }
+}
+
+export async function machineSyncCodexThread(options: {
+    machineId: string;
+    sessionId: string;
+    threadId?: string | null;
+}): Promise<CodexThreadSyncResult> {
+    const { machineId, sessionId, threadId } = options;
+
+    try {
+        const result = await apiSocket.machineRPC<CodexThreadSyncResult, {
+            happySessionId: string;
+            threadId?: string | null;
+        }>(
+            machineId,
+            'codex-thread-sync',
+            { happySessionId: sessionId, threadId: threadId ?? null },
+        );
+        await sync.refreshSessionMessages(sessionId);
+        return result;
+    } catch (error) {
+        return {
+            type: 'error',
+            errorMessage: error instanceof Error ? error.message : 'Failed to sync Codex thread',
         };
     }
 }

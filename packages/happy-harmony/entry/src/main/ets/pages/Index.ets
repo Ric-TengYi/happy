@@ -58,6 +58,7 @@ import {
   PermissionAction,
   CodexThreadListResult,
   CodexThreadSummary,
+  CodexThreadSyncResult,
   DirectoryEntrySummary,
   DirectoryListResult,
   MachineDeleteResult,
@@ -76,6 +77,7 @@ import {
   respondToSessionPermission,
   spawnMachineSession,
   stopMachineDaemon,
+  syncCodexThread,
 } from '../services/HappySessionRpc';
 
 const TAB_INBOX: string = 'inbox';
@@ -85,6 +87,9 @@ const SCAN_CANCEL_CODE: number = scanCore.ScanErrorCode.SCAN_SERVICE_CANCELED;
 const MACHINE_DELETE_CONFIRM_MESSAGE: string = '再次点击确认删除设备（8 秒内有效）';
 const DIRECTORY_PICKER_NEW_SESSION: string = 'new-session';
 const DIRECTORY_PICKER_WORKSPACE: string = 'workspace';
+const CODEX_THREAD_ALL_SCOPE: string = '__happy_all_codex_threads__';
+const CODEX_THREAD_UNKNOWN_PROJECT: string = '__happy_unknown_codex_project__';
+const CODEX_THREAD_LIST_LIMIT: number = 100;
 
 interface SessionModeOption {
   key: string;
@@ -96,6 +101,12 @@ interface DetailRow {
   value: string;
   tone?: string;
   monospace?: boolean;
+}
+
+interface CodexThreadProjectGroup {
+  key: string;
+  threads: CodexThreadSummary[];
+  updatedAt: number;
 }
 
 const CLAUDE_PERMISSION_OPTIONS: SessionModeOption[] = [
@@ -1684,13 +1695,13 @@ struct Index {
   private CodexThreadListContent(machine: HappyMachine) {
     Row() {
       Column({ space: 2 }) {
-        Text('当前目录 Codex 会话')
+        Text('Codex 项目与话题')
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
           .fontColor('#202124')
           .width('100%')
 
-        Text(this.formatMachinePathForDisplay(this.getCodexThreadListCwd(machine), machine))
+        Text(this.getCodexThreadScopeLabel())
           .fontSize(12)
           .fontColor('#5F6368')
           .maxLines(1)
@@ -1734,15 +1745,15 @@ struct Index {
       }
 
       if (!this.hasCodexThreadsForCurrentPath(machine) && !this.isLoadingCodexThreads) {
-        Text('暂无已加载的 Codex 会话，点击刷新读取当前目录记录。')
+        Text('暂无已加载的 Codex 话题。')
           .fontSize(13)
           .fontColor('#5F6368')
           .width('100%')
       } else {
-        ForEach(this.getCodexThreadsForCurrentPath(machine), (thread: CodexThreadSummary) => {
-          Row({ space: 10 }) {
-            Column({ space: 3 }) {
-              Text(this.getCodexThreadTitle(thread))
+        ForEach(this.getCodexThreadProjectGroups(machine), (group: CodexThreadProjectGroup) => {
+          Column({ space: 8 }) {
+            Column({ space: 2 }) {
+              Text(this.getCodexThreadProjectTitle(group, machine))
                 .fontSize(14)
                 .fontWeight(FontWeight.Medium)
                 .fontColor('#202124')
@@ -1750,7 +1761,7 @@ struct Index {
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .width('100%')
 
-              Text(this.getCodexThreadSubtitle(thread, machine))
+              Text(this.getCodexThreadProjectSubtitle(group, machine))
                 .fontSize(12)
                 .fontColor('#5F6368')
                 .maxLines(2)
@@ -1758,29 +1769,59 @@ struct Index {
                 .width('100%')
             }
             .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
+            .width('100%')
 
-            Button(this.attachingCodexThreadId === thread.id ? '接入中' : '接入')
-              .width(64)
-              .height(32)
-              .fontSize(12)
-              .backgroundColor(this.canAttachCodexThread(machine, thread) ? '#E8F0FE' : '#F1F3F4')
-              .fontColor(this.canAttachCodexThread(machine, thread) ? '#0B57D0' : '#9AA0A6')
-              .enabled(this.canAttachCodexThread(machine, thread))
-              .onClick(() => {
-                this.attachCodexThreadFromList(machine, thread);
-              })
+            ForEach(group.threads, (thread: CodexThreadSummary) => {
+              this.CodexThreadRow(machine, thread)
+            }, (thread: CodexThreadSummary) => thread.id)
           }
           .width('100%')
-          .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-          .backgroundColor('#F7F8FA')
-          .borderRadius(8)
-          .onClick(() => {
-            this.attachCodexThreadFromList(machine, thread);
-          })
-        }, (thread: CodexThreadSummary) => thread.id)
+          .padding({ top: 4, bottom: 4 })
+        }, (group: CodexThreadProjectGroup) => group.key)
       }
     }
+  }
+
+  @Builder
+  private CodexThreadRow(machine: HappyMachine, thread: CodexThreadSummary) {
+    Row({ space: 10 }) {
+      Column({ space: 3 }) {
+        Text(this.getCodexThreadTitle(thread))
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#202124')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(this.getCodexThreadSubtitle(thread, machine))
+          .fontSize(12)
+          .fontColor('#5F6368')
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Button(this.attachingCodexThreadId === thread.id ? '接入中' : '接入')
+        .width(64)
+        .height(32)
+        .fontSize(12)
+        .backgroundColor(this.canAttachCodexThread(machine, thread) ? '#E8F0FE' : '#F1F3F4')
+        .fontColor(this.canAttachCodexThread(machine, thread) ? '#0B57D0' : '#9AA0A6')
+        .enabled(this.canAttachCodexThread(machine, thread))
+        .onClick(() => {
+          this.attachCodexThreadFromList(machine, thread);
+        })
+    }
+    .width('100%')
+    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+    .backgroundColor('#F7F8FA')
+    .borderRadius(8)
+    .onClick(() => {
+      this.attachCodexThreadFromList(machine, thread);
+    })
   }
 
   @Builder
@@ -1932,7 +1973,7 @@ struct Index {
           .backgroundColor(Color.Transparent)
           .enabled(!this.isMessagesLoading && this.isAuthenticated)
           .onClick(() => {
-            this.refreshSelectedSessionMessages();
+            this.refreshSelectedSessionFromHeader();
           })
       }
       .width('100%')
@@ -3264,6 +3305,22 @@ struct Index {
     return null;
   }
 
+  private getSessionMachine(session: HappySession): HappyMachine | null {
+    const machineId = this.normalizeOptionalText(session.metadata?.machineId);
+    return machineId.length > 0 ? this.findMachineInList(this.machines, machineId) : null;
+  }
+
+  private canSyncSelectedCodexThread(session: HappySession): boolean {
+    const flavor = this.normalizeOptionalText(session.metadata?.flavor);
+    const threadId = this.normalizeOptionalText(session.metadata?.codexThreadId);
+    const machine = this.getSessionMachine(session);
+    return this.isAuthenticated
+      && flavor === 'codex'
+      && threadId.length > 0
+      && machine !== null
+      && machine.active;
+  }
+
   private openMachineDetail(machineId: string): void {
     this.selectedSessionId = '';
     this.selectedMachineDetailId = machineId;
@@ -3387,7 +3444,72 @@ struct Index {
     this.refreshSelectedSessionMessagesAsync(generation, this.serverUrl, session);
   }
 
-  private async refreshSelectedSessionMessagesAsync(generation: number, serverUrl: string, session: HappySession): Promise<void> {
+  private refreshSelectedSessionFromHeader(): void {
+    if (!this.isAuthenticated || this.selectedSessionId.length === 0) {
+      return;
+    }
+    if (this.isMessagesLoading) {
+      this.hasQueuedMessageRefresh = true;
+      return;
+    }
+    const session = this.getSelectedSession();
+    if (!session) {
+      this.refreshSelectedSessionMessages();
+      return;
+    }
+    if (!this.canSyncSelectedCodexThread(session)) {
+      this.refreshSelectedSessionMessages();
+      return;
+    }
+    const machine = this.getSessionMachine(session);
+    const threadId = this.normalizeOptionalText(session.metadata?.codexThreadId);
+    if (!machine || threadId.length === 0) {
+      this.refreshSelectedSessionMessages();
+      return;
+    }
+    const generation = this.messageGeneration + 1;
+    this.messageGeneration = generation;
+    this.hasQueuedMessageRefresh = false;
+    this.isMessagesLoading = true;
+    this.messageStatus = '正在同步 Codex 历史...';
+    this.syncSelectedCodexThreadAsync(generation, this.serverUrl, machine, session, threadId);
+  }
+
+  private async syncSelectedCodexThreadAsync(
+    generation: number,
+    serverUrl: string,
+    machine: HappyMachine,
+    session: HappySession,
+    threadId: string,
+  ): Promise<void> {
+    try {
+      const result: CodexThreadSyncResult = await syncCodexThread(this.getAbilityContext(), serverUrl, machine, session, threadId);
+      if (!this.isCurrentMessageLoad(generation, session.id)) {
+        return;
+      }
+      this.messageStatus = result.imported > 0
+        ? `Codex 历史已同步 ${result.imported} 条，正在读取消息...`
+        : 'Codex 历史已同步，正在读取消息...';
+      await this.refreshSelectedSessionMessagesAsync(generation, serverUrl, session);
+      if (this.isCurrentMessageLoad(generation, session.id)) {
+        this.refreshControlPlaneData();
+      }
+    } catch (error) {
+      if (!this.isCurrentMessageLoad(generation, session.id)) {
+        return;
+      }
+      console.error(`同步 Codex 历史失败：${error}`);
+      this.messageStatus = `Codex 同步失败，正在读取本地消息：${this.toUserError(error, '请确认电脑端 daemon 在线且 Codex 可用')}`;
+      await this.refreshSelectedSessionMessagesAsync(generation, serverUrl, session, 'Codex 同步失败');
+    }
+  }
+
+  private async refreshSelectedSessionMessagesAsync(
+    generation: number,
+    serverUrl: string,
+    session: HappySession,
+    statusNotice: string = '',
+  ): Promise<void> {
     try {
       const snapshot: SessionMessagesSnapshot = await loadSessionMessages(this.getAbilityContext(), serverUrl, session);
       if (!this.isCurrentMessageLoad(generation, session.id)) {
@@ -3396,9 +3518,10 @@ struct Index {
       const shouldHoldScrollPosition = this.showJumpToLatestButton;
       this.messages = this.mergePendingMessages(snapshot.messages);
       this.permissions = snapshot.permissions;
-      this.messageStatus = snapshot.decodeWarningCount > 0
+      const baseMessageStatus = snapshot.decodeWarningCount > 0
         ? `消息读取完成，${snapshot.decodeWarningCount} 条解密失败`
         : `消息读取完成，${snapshot.messages.length} 条`;
+      this.messageStatus = statusNotice.length > 0 ? `${statusNotice}，${baseMessageStatus}` : baseMessageStatus;
       if (this.pendingMessages.length === 0 && this.messageSendStatus === '发送成功，正在同步...') {
         this.messageSendStatus = '发送成功';
       }
@@ -4143,9 +4266,11 @@ struct Index {
   }
 
   private getCodexThreadListCwd(machine: HappyMachine): string {
-    const inputPath = this.newSessionPath.trim().length > 0 ? this.newSessionPath : this.getMachineDefaultDirectory(machine);
-    const resolved = this.resolveMachineSpawnPath(inputPath, machine).trim();
-    return resolved.length > 0 ? resolved : this.getMachineDefaultDirectory(machine);
+    return CODEX_THREAD_ALL_SCOPE;
+  }
+
+  private getCodexThreadScopeLabel(): string {
+    return `全部项目 · 最近 ${CODEX_THREAD_LIST_LIMIT} 个话题`;
   }
 
   private isCodexThreadStateForCurrentPath(machine: HappyMachine): boolean {
@@ -4179,15 +4304,15 @@ struct Index {
     this.codexThreadCwd = cwd;
     this.isLoadingCodexThreads = true;
     this.codexThreads = [];
-    this.codexThreadStatus = '正在读取当前目录 Codex 会话...';
+    this.codexThreadStatus = '正在读取 Codex 项目与话题...';
     this.refreshCodexThreadsAsync(generation, machine, cwd);
   }
 
   private async refreshCodexThreadsAsync(generation: number, machine: HappyMachine, cwd: string): Promise<void> {
     try {
       const result: CodexThreadListResult = await listCodexThreads(this.getAbilityContext(), this.serverUrl, machine, {
-        limit: 20,
-        cwd,
+        limit: CODEX_THREAD_LIST_LIMIT,
+        cwd: cwd === CODEX_THREAD_ALL_SCOPE ? null : cwd,
         archived: false,
       });
       if (!this.isCurrentCodexThreadLoad(generation, machine, cwd)) {
@@ -4195,8 +4320,8 @@ struct Index {
       }
       this.codexThreads = result.threads;
       this.codexThreadStatus = result.threads.length > 0
-        ? `已读取 ${result.threads.length} 个当前目录 Codex 会话`
-        : '当前目录未读取到 Codex 会话';
+        ? `已读取 ${this.getCodexThreadProjectGroups(machine).length} 个项目、${result.threads.length} 个话题`
+        : '未读取到 Codex 话题';
     } catch (error) {
       if (!this.isCurrentCodexThreadLoad(generation, machine, cwd)) {
         return;
@@ -4266,11 +4391,62 @@ struct Index {
     return this.trimIdentifier(thread.id);
   }
 
+  private getCodexThreadProjectGroups(machine: HappyMachine): CodexThreadProjectGroup[] {
+    const groups: CodexThreadProjectGroup[] = [];
+    const threads = this.getCodexThreadsForCurrentPath(machine);
+    for (let index = 0; index < threads.length; index += 1) {
+      const thread = threads[index];
+      const key = this.getCodexThreadProjectKey(thread);
+      let groupIndex = -1;
+      for (let groupSearchIndex = 0; groupSearchIndex < groups.length; groupSearchIndex += 1) {
+        if (groups[groupSearchIndex].key === key) {
+          groupIndex = groupSearchIndex;
+          break;
+        }
+      }
+      if (groupIndex < 0) {
+        const groupThreads: CodexThreadSummary[] = [];
+        groups.push({
+          key,
+          threads: groupThreads,
+          updatedAt: 0,
+        });
+        groupIndex = groups.length - 1;
+      }
+      groups[groupIndex].threads.push(thread);
+      if (thread.updatedAt > groups[groupIndex].updatedAt) {
+        groups[groupIndex].updatedAt = thread.updatedAt;
+      }
+    }
+    groups.sort((left: CodexThreadProjectGroup, right: CodexThreadProjectGroup): number => right.updatedAt - left.updatedAt);
+    return groups;
+  }
+
+  private getCodexThreadProjectKey(thread: CodexThreadSummary): string {
+    const cwd = thread.cwd.trim();
+    return cwd.length > 0 ? cwd : CODEX_THREAD_UNKNOWN_PROJECT;
+  }
+
+  private getCodexThreadProjectTitle(group: CodexThreadProjectGroup, machine: HappyMachine): string {
+    if (group.key === CODEX_THREAD_UNKNOWN_PROJECT) {
+      return '未记录项目';
+    }
+    return this.formatMachinePathForDisplay(group.key, machine);
+  }
+
+  private getCodexThreadProjectSubtitle(group: CodexThreadProjectGroup, machine: HappyMachine): string {
+    const parts: string[] = [`${group.threads.length} 个话题`];
+    if (group.updatedAt > 0) {
+      parts.push(`最近 ${this.formatRelativeTime(group.updatedAt * 1000)}`);
+    }
+    if (group.key !== CODEX_THREAD_UNKNOWN_PROJECT) {
+      parts.push(this.formatMachinePathForInput(group.key, machine));
+    }
+    return parts.join(' · ');
+  }
+
   private getCodexThreadSubtitle(thread: CodexThreadSummary, machine: HappyMachine): string {
     const parts: string[] = [];
-    if (thread.cwd.length > 0) {
-      parts.push(this.formatMachinePathForDisplay(thread.cwd, machine));
-    }
     if (thread.updatedAt > 0) {
       parts.push(this.formatRelativeTime(thread.updatedAt * 1000));
     }

@@ -130,6 +130,38 @@ describe('ApiMachineClient Codex machine RPC handlers', () => {
         });
     });
 
+    it('routes encrypted codex-thread-sync requests to the configured handler', async () => {
+        const machine = makeMachine();
+        const syncCodexThread = vi.fn(async () => ({
+            type: 'success' as const,
+            threadId: 'thread-1',
+            imported: 3,
+        }));
+        const client = new ApiMachineClient('token', machine as any);
+
+        client.setRPCHandlers({
+            spawnSession: vi.fn(),
+            syncCodexThread,
+            stopSession: vi.fn(() => true),
+            requestShutdown: vi.fn(),
+        });
+
+        const response = await callEncryptedMachineRpc(client, machine, 'codex-thread-sync', {
+            happySessionId: 'happy-session-1',
+            threadId: 'thread-1',
+        });
+
+        expect(syncCodexThread).toHaveBeenCalledWith({
+            happySessionId: 'happy-session-1',
+            threadId: 'thread-1',
+        });
+        expect(response).toEqual({
+            type: 'success',
+            threadId: 'thread-1',
+            imported: 3,
+        });
+    });
+
     it('routes encrypted directory-list requests to the configured handler', async () => {
         const machine = makeMachine();
         const listDirectories = vi.fn(async () => ({

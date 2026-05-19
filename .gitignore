@@ -17,10 +17,14 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+*.cer
+*.p7b
+*.csr
 
 # HarmonyOS / Hvigor
 .hvigor/
@@ -31,6 +35,8 @@ expo-env.d.ts
 /packages/happy-harmony/entry/build/
 /packages/happy-harmony/oh_modules/
 /packages/happy-harmony/**/oh_modules/
+/packages/happy-harmony/signing/
+/packages/happy-harmony/signing-config/
 
 # Metro
 .metro-health-check*

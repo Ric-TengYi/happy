@@ -30,6 +30,8 @@ import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import { listDirectoryEntriesForPicker } from './directoryBrowser';
+import { ApiSessionClient } from '@/api/apiSession';
+import { importCodexThreadHistoryWithTemporaryClient } from '@/codex/importThreadHistory';
 
 // Prepare initial metadata
 // Suffix host with `-dev` for the HAPPY_VARIANT=dev variant so the dev daemon
@@ -734,6 +736,76 @@ export async function startDaemon(): Promise<void> {
       }
     };
 
+    const syncCodexThread = async (options: { happySessionId: string; threadId?: string | null }): Promise<{
+      type: 'success';
+      threadId: string;
+      imported: number;
+    } | {
+      type: 'error';
+      errorMessage: string;
+    }> => {
+      try {
+        const tracked = findTrackedSessionById(options.happySessionId);
+        if (!tracked) {
+          return { type: 'error', errorMessage: `Session ${options.happySessionId} is not tracked by this daemon. It may have been started before the daemon or on another machine.` };
+        }
+        if (!tracked.happySessionMetadataFromLocalWebhook) {
+          return { type: 'error', errorMessage: `Session ${options.happySessionId} has no metadata. Cannot sync Codex history.` };
+        }
+        if (!tracked.encryption) {
+          return { type: 'error', errorMessage: `Session ${options.happySessionId} has no stored encryption data. It was likely started before this feature was available.` };
+        }
+
+        let metadata = tracked.happySessionMetadataFromLocalWebhook;
+        const requestedThreadId = options.threadId?.trim();
+        if (!requestedThreadId && !metadata.codexThreadId) {
+          const serverMetadata = await fetchServerSessionMetadata(options.happySessionId, tracked.encryption.encryptionKey, tracked.encryption.encryptionVariant);
+          if (serverMetadata) {
+            metadata = serverMetadata;
+            tracked.happySessionMetadataFromLocalWebhook = serverMetadata;
+          }
+        }
+
+        const threadId = requestedThreadId && requestedThreadId.length > 0 ? requestedThreadId : metadata.codexThreadId;
+        if (!threadId) {
+          return { type: 'error', errorMessage: `Session ${options.happySessionId} is missing its Codex thread ID.` };
+        }
+
+        const session = new ApiSessionClient(credentials.token, {
+          id: options.happySessionId,
+          seq: tracked.encryption.seq,
+          metadata,
+          metadataVersion: tracked.encryption.metadataVersion,
+          agentState: null,
+          agentStateVersion: tracked.encryption.agentStateVersion,
+          encryptionKey: tracked.encryption.encryptionKey,
+          encryptionVariant: tracked.encryption.encryptionVariant,
+        });
+
+        try {
+          session.skipExistingMessages();
+          const result = await importCodexThreadHistoryWithTemporaryClient({
+            session,
+            threadId,
+          });
+          return {
+            type: 'success',
+            threadId: result.threadId,
+            imported: result.imported,
+          };
+        } finally {
+          await session.close();
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.debug(`[DAEMON RUN] Failed to sync Codex thread history: ${errorMessage}`);
+        return {
+          type: 'error',
+          errorMessage: `Failed to sync Codex thread history: ${errorMessage}`,
+        };
+      }
+    };
+
     const listDirectories = async (options?: { path?: string | null; showHidden?: boolean | null; limit?: number | null }) => {
       return listDirectoryEntriesForPicker({
         path: options?.path ?? os.homedir(),
@@ -919,6 +991,7 @@ export async function startDaemon(): Promise<void> {
       listDirectories,
       listCodexThreads,
       attachCodexThread,
+      syncCodexThread,
       stopSession,
       requestShutdown: () => requestShutdown('happy-app')
     });

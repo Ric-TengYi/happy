@@ -25,7 +25,7 @@ describe('TerminalAuthService', () => {
   it('approves pending terminal requests with a v1 encrypted account secret', async () => {
     const requests: Array<{ method: string; url: string; body?: unknown; headers: Record<string, string> }> = [];
     const service = createTerminalAuthService({
-      getServerUrl: () => 'https://47.118.25.177',
+      getServerUrl: () => 'https://api.cluster-fluster.com',
       getHappyClientId: () => 'harmony/0.1.0',
       getContentPublicKey: async () => {
         throw new Error('V2 should not be derived');
@@ -48,12 +48,12 @@ describe('TerminalAuthService', () => {
 
     expect(requests[0]).toEqual({
       method: 'GET',
-      url: `https://47.118.25.177/v1/auth/request/status?publicKey=${encodeURIComponent(encodeBase64(terminalPublicKey))}`,
+      url: `https://api.cluster-fluster.com/v1/auth/request/status?publicKey=${encodeURIComponent(encodeBase64(terminalPublicKey))}`,
       headers: {
         'X-Happy-Client': 'harmony/0.1.0',
       },
     });
-    expect(requests[1].url).toBe('https://47.118.25.177/v1/auth/response');
+    expect(requests[1].url).toBe('https://api.cluster-fluster.com/v1/auth/response');
     expect(requests[1].headers).toEqual({
       Authorization: 'Bearer account-token',
       'X-Happy-Client': 'harmony/0.1.0',
@@ -68,7 +68,7 @@ describe('TerminalAuthService', () => {
     const contentSeed = await deriveKey(accountSecret, 'Happy EnCoder', ['content'], hmacSha512);
     const contentPublicKey = boxPublicKeyFromSeed(contentSeed);
     const service = createTerminalAuthService({
-      getServerUrl: () => 'https://47.118.25.177',
+      getServerUrl: () => 'https://api.cluster-fluster.com',
       getHappyClientId: () => 'harmony/0.1.0',
       getContentPublicKey: async (secret) => {
         expect(secret).toEqual(accountSecret);
@@ -81,7 +81,7 @@ describe('TerminalAuthService', () => {
       },
       getJson: async <T>(): Promise<T> => ({ status: 'pending', supportsV2: true }) as T,
       postJson: async <T>(url: string, body: unknown): Promise<T> => {
-        expect(url).toBe('https://47.118.25.177/v1/auth/response');
+        expect(url).toBe('https://api.cluster-fluster.com/v1/auth/response');
         expect(body).toEqual({
           publicKey: encodeBase64(terminalPublicKey),
           response: encodeBase64(Uint8Array.from([1, 2, 3])),
@@ -100,7 +100,7 @@ describe('TerminalAuthService', () => {
 
   it('does not POST for already resolved terminal requests', async () => {
     const service = createTerminalAuthService({
-      getServerUrl: () => 'https://47.118.25.177',
+      getServerUrl: () => 'https://api.cluster-fluster.com',
       getHappyClientId: () => 'harmony/0.1.0',
       getContentPublicKey: async () => Uint8Array.from([]),
       encryptBox,
@@ -118,7 +118,7 @@ describe('TerminalAuthService', () => {
 
   it('rejects unsupported QR URLs and malformed credentials', async () => {
     const service = createTerminalAuthService({
-      getServerUrl: () => 'https://47.118.25.177',
+      getServerUrl: () => 'https://api.cluster-fluster.com',
       getHappyClientId: () => 'harmony/0.1.0',
       getContentPublicKey: async () => Uint8Array.from([]),
       encryptBox,

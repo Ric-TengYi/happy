@@ -7,7 +7,7 @@ describe('AuthService', () => {
     const posted: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
     const secret = Uint8Array.from(Array.from({ length: 32 }, (_, index) => index));
     const service = createAuthService({
-      getServerUrl: () => 'https://47.118.25.177',
+      getServerUrl: () => 'https://api.cluster-fluster.com',
       getHappyClientId: () => 'harmony/0.1.0',
       createAuthChallenge: (input) => {
         expect(input).toEqual(secret);
@@ -26,7 +26,7 @@ describe('AuthService', () => {
     await expect(service.getToken(secret)).resolves.toBe('server-token');
 
     expect(posted).toEqual([{
-      url: 'https://47.118.25.177/v1/auth',
+      url: 'https://api.cluster-fluster.com/v1/auth',
       body: {
         publicKey: encodeBase64(Uint8Array.from([1, 2, 3])),
         challenge: encodeBase64(Uint8Array.from([4, 5, 6])),

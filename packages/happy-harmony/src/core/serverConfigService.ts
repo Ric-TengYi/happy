@@ -2,6 +2,7 @@ import type { KeyValueStore } from './storage';
 
 const SERVER_KEY = 'custom-server-url';
 const DEFAULT_SERVER_URL = 'https://47.118.25.177';
+const LEGACY_DEFAULT_SERVER_URL = 'https://api.cluster-fluster.com';
 const HAPPY_SERVER_MARKER = 'Welcome to Happy Server!';
 
 export interface HttpGetText {
@@ -26,12 +27,14 @@ export function createServerConfigService(options: {
 
   return {
     getServerUrl() {
-      return options.storage.getString(SERVER_KEY) ?? defaultServerUrl;
+      const stored = options.storage.getString(SERVER_KEY);
+      return stored && stored !== LEGACY_DEFAULT_SERVER_URL ? stored : defaultServerUrl;
     },
     setServerUrl(url) {
       const trimmed = url?.trim();
-      if (trimmed) {
-        options.storage.setString(SERVER_KEY, trimmed);
+      const normalized = trimmed === LEGACY_DEFAULT_SERVER_URL ? defaultServerUrl : trimmed;
+      if (normalized && normalized !== defaultServerUrl) {
+        options.storage.setString(SERVER_KEY, normalized);
       } else {
         options.storage.remove(SERVER_KEY);
       }

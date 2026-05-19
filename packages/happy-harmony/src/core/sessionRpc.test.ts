@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildSessionPermissionRequest,
   buildSocketIoRpcCallPacket,
   parseSocketIoRpcAckPacket,
 } from './sessionRpc';
+
+const testDir = dirname(fileURLToPath(import.meta.url));
+const sessionRpcServiceSource = readFileSync(resolve(testDir, '../../entry/src/main/ets/services/HappySessionRpc.ets'), 'utf8');
 
 describe('session rpc helpers', () => {
   it('builds a Socket.IO rpc-call packet with an ack id', () => {
@@ -44,5 +50,13 @@ describe('session rpc helpers', () => {
       approved: false,
       decision: 'abort',
     });
+  });
+
+  it('keeps Harmony Codex history sync wired to the machine RPC method', () => {
+    expect(sessionRpcServiceSource).toContain('export async function syncCodexThread(');
+    expect(sessionRpcServiceSource).toContain('CodexThreadSyncRequest');
+    expect(sessionRpcServiceSource).toContain("`${machine.id}:codex-thread-sync`");
+    expect(sessionRpcServiceSource).toContain('MACHINE_CODEX_SYNC_RPC_TIMEOUT_MS');
+    expect(sessionRpcServiceSource).toContain('normalizeCodexThreadSyncResult');
   });
 });

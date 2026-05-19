@@ -76,7 +76,7 @@ export class PushNotificationClient {
     private readonly baseUrl: string
     private readonly expo: Expo
 
-    constructor(token: string, baseUrl: string = 'https://api.cluster-fluster.com') {
+    constructor(token: string, baseUrl: string = 'https://47.118.25.177') {
         this.token = token
         this.baseUrl = baseUrl
         this.expo = new Expo()

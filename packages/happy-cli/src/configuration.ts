@@ -30,7 +30,7 @@ class Configuration {
 
   constructor() {
     // Server configuration - priority: parameter > environment > default
-    this.serverUrl = process.env.HAPPY_SERVER_URL || 'https://api.cluster-fluster.com'
+    this.serverUrl = process.env.HAPPY_SERVER_URL || 'https://47.118.25.177'
     this.webappUrl = process.env.HAPPY_WEBAPP_URL || 'https://app.happy.engineering'
 
     // Check if we're running as daemon based on process args

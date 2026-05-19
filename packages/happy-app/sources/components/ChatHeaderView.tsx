@@ -29,6 +29,9 @@ interface ChatHeaderViewProps {
     onAfterAvatarDelete?: () => void;
     onSidebarTogglePress?: () => void;
     sidebarCollapsed?: boolean;
+    onRefreshPress?: () => void;
+    refreshDisabled?: boolean;
+    refreshing?: boolean;
 }
 
 export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
@@ -46,6 +49,9 @@ export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
     onAfterAvatarDelete,
     onSidebarTogglePress,
     sidebarCollapsed,
+    onRefreshPress,
+    refreshDisabled = false,
+    refreshing = false,
 }) => {
     const { theme } = useUnistyles();
     const navigation = useNavigation();
@@ -161,6 +167,21 @@ export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
                         )}
                     </View>
 
+                    {onRefreshPress && (
+                        <Pressable
+                            onPress={refreshDisabled ? undefined : onRefreshPress}
+                            hitSlop={10}
+                            style={[styles.refreshButton, refreshDisabled && styles.disabledButton]}
+                            accessibilityLabel="Refresh conversation"
+                        >
+                            <Ionicons
+                                name={refreshing ? 'sync' : 'refresh'}
+                                size={22}
+                                color={theme.colors.header.tint}
+                            />
+                        </Pressable>
+                    )}
+
                     {avatarId && onAvatarPress && (
                         <View collapsable={false} ref={avatarAnchorRef} style={styles.avatarButtonSlot}>
                             {avatarMenuSession ? (
@@ -269,11 +290,20 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
+    refreshButton: {
+        width: 44,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
     sidebarToggleButton: {
         width: 36,
         height: 36,
         alignItems: 'center',
         justifyContent: 'center',
         marginRight: Platform.select({ ios: -8, default: -8 }),
+    },
+    disabledButton: {
+        opacity: 0.5,
     },
 });

@@ -102,6 +102,14 @@ type MachineRpcHandlers = {
         backwardsCursor: string | null;
     }>;
     attachCodexThread?: (options: { threadId: string; cwd?: string | null; threadName?: string | null }) => Promise<SpawnSessionResult>;
+    syncCodexThread?: (options: { happySessionId: string; threadId?: string | null }) => Promise<{
+        type: 'success';
+        threadId: string;
+        imported: number;
+    } | {
+        type: 'error';
+        errorMessage: string;
+    }>;
     stopSession: (sessionId: string) => boolean;
     requestShutdown: () => void;
 }
@@ -136,6 +144,7 @@ export class ApiMachineClient {
         listDirectories,
         listCodexThreads,
         attachCodexThread,
+        syncCodexThread,
         stopSession,
         requestShutdown
     }: MachineRpcHandlers) {
@@ -206,6 +215,26 @@ export class ApiMachineClient {
                     case 'success':
                         return { type: 'success', sessionId: result.sessionId };
                     case 'requestToApproveDirectoryCreation':
+                        return result;
+                    case 'error':
+                        throw new Error(result.errorMessage);
+                }
+            });
+        }
+
+        if (syncCodexThread) {
+            this.rpcHandlerManager.registerHandler('codex-thread-sync', async (params: any) => {
+                const happySessionId = typeof params?.happySessionId === 'string' ? params.happySessionId.trim() : '';
+                if (happySessionId.length === 0) {
+                    throw new Error('Happy session ID is required');
+                }
+
+                const result = await syncCodexThread({
+                    happySessionId,
+                    threadId: typeof params?.threadId === 'string' ? params.threadId.trim() : null,
+                });
+                switch (result.type) {
+                    case 'success':
                         return result;
                     case 'error':
                         throw new Error(result.errorMessage);

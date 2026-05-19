@@ -7,6 +7,7 @@ import { http } from '@kit.NetworkKit';
 import { deriveContentPublicKey, encryptBox } from './HappyBox';
 
 const DEFAULT_SERVER_URL: string = 'https://47.118.25.177';
+const LEGACY_DEFAULT_SERVER_URL: string = 'https://api.cluster-fluster.com';
 const HAPPY_SERVER_MARKER: string = 'Welcome to Happy Server!';
 const SERVER_PREFS: string = 'happy-server-config';
 const SERVER_URL_KEY: string = 'custom-server-url';
@@ -103,14 +104,15 @@ export function getDefaultServerUrl(): string {
 export function getServerUrl(context: common.UIAbilityContext): string {
   const store = getPrefs(context, SERVER_PREFS);
   const stored = store.getSync(SERVER_URL_KEY, '') as string;
-  return stored.length > 0 ? stored : DEFAULT_SERVER_URL;
+  return stored.length > 0 && stored !== LEGACY_DEFAULT_SERVER_URL ? stored : DEFAULT_SERVER_URL;
 }
 
 export async function setServerUrl(context: common.UIAbilityContext, url: string): Promise<void> {
   const trimmed = url.trim();
+  const normalized = trimmed === LEGACY_DEFAULT_SERVER_URL ? DEFAULT_SERVER_URL : trimmed;
   const store = getPrefs(context, SERVER_PREFS);
-  if (trimmed.length > 0 && trimmed !== DEFAULT_SERVER_URL) {
-    store.putSync(SERVER_URL_KEY, trimmed);
+  if (normalized.length > 0 && normalized !== DEFAULT_SERVER_URL) {
+    store.putSync(SERVER_URL_KEY, normalized);
   } else {
     store.deleteSync(SERVER_URL_KEY);
   }

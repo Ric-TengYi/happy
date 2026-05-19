@@ -68,4 +68,29 @@ describe('session detail UI source', () => {
     expect(refreshSource).toContain('this.showJumpToLatestButton = true;');
     expect(refreshSource).toContain('this.scrollMessagesToLatest(false);');
   });
+
+  test('header refresh imports Codex thread history before loading messages', () => {
+    const screenSource = sourceBlock('private SessionDetailScreen()');
+    const headerRefreshSource = sourceBlock('private refreshSelectedSessionFromHeader()');
+    const syncSource = sourceBlock('private async syncSelectedCodexThreadAsync');
+    const canSyncSource = sourceBlock('private canSyncSelectedCodexThread(session: HappySession)');
+
+    expect(indexSource).toContain('syncCodexThread,');
+    expect(screenSource).toContain('this.refreshSelectedSessionFromHeader();');
+    expect(headerRefreshSource).toContain('this.canSyncSelectedCodexThread(session)');
+    expect(headerRefreshSource).toContain("this.messageStatus = '正在同步 Codex 历史...';");
+    expect(syncSource).toContain('await syncCodexThread(');
+    expect(syncSource).toContain('await this.refreshSelectedSessionMessagesAsync(generation, serverUrl, session);');
+    expect(syncSource).toContain("await this.refreshSelectedSessionMessagesAsync(generation, serverUrl, session, 'Codex 同步失败');");
+    expect(canSyncSource).toContain("flavor === 'codex'");
+    expect(canSyncSource).toContain('machine.active');
+  });
+
+  test('message refresh can keep a status notice after fallback loading', () => {
+    const refreshSource = sourceBlock('private async refreshSelectedSessionMessagesAsync');
+
+    expect(refreshSource).toContain('statusNotice: string =');
+    expect(refreshSource).toContain('const baseMessageStatus = snapshot.decodeWarningCount > 0');
+    expect(refreshSource).toContain('statusNotice.length > 0');
+  });
 });

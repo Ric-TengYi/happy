@@ -11,6 +11,7 @@ const SOCKET_PATH: string = '/v1/updates/';
 const RPC_ACK_ID: number = 1;
 const RPC_TIMEOUT_MS: number = 12000;
 const MACHINE_SPAWN_RPC_TIMEOUT_MS: number = 30000;
+const MACHINE_CODEX_SYNC_RPC_TIMEOUT_MS: number = 60000;
 
 interface WebSocketHeaders {
   'X-Happy-Client': string;
@@ -103,6 +104,11 @@ interface AttachCodexThreadRequest {
   threadName?: string | null;
 }
 
+interface CodexThreadSyncRequest {
+  happySessionId: string;
+  threadId?: string | null;
+}
+
 interface StopMachineDaemonRequest {
   request?: string;
 }
@@ -143,6 +149,13 @@ export interface CodexThreadListResult {
   threads: CodexThreadSummary[];
   nextCursor: string;
   backwardsCursor: string;
+}
+
+export interface CodexThreadSyncResult {
+  type: string;
+  threadId: string;
+  imported: number;
+  errorMessage?: string;
 }
 
 export interface DirectoryEntrySummary {
@@ -331,6 +344,51 @@ export async function attachCodexThread(
   }
   const decrypted = decryptRawPayload(ack.result, machine.dataEncryptionKey, credentials, '终端密钥不可用');
   return normalizeSpawnMachineSessionResult(decrypted);
+}
+
+export async function syncCodexThread(
+  context: common.UIAbilityContext,
+  serverUrl: string,
+  machine: HappyMachine,
+  session: HappySession,
+  threadId: string,
+): Promise<CodexThreadSyncResult> {
+  const credentials = await loadCredentials(context);
+  if (!credentials) {
+    throw new Error('请先登录账号');
+  }
+  if (credentials.token.length === 0) {
+    throw new Error('登录 token 为空');
+  }
+  if (machine.id.length === 0) {
+    throw new Error('终端 ID 为空');
+  }
+  if (session.id.length === 0) {
+    throw new Error('会话 ID 为空');
+  }
+
+  const request: CodexThreadSyncRequest = {
+    happySessionId: session.id,
+    threadId: threadId.length > 0 ? threadId : null,
+  };
+  const encryptedParams = encryptRawPayload(request, machine.dataEncryptionKey, credentials, '终端密钥不可用');
+  const ack = await sendRpc(
+    serverUrl,
+    credentials,
+    `${machine.id}:codex-thread-sync`,
+    encryptedParams,
+    '同步 Codex 历史',
+    MACHINE_CODEX_SYNC_RPC_TIMEOUT_MS,
+  );
+  if (!ack.result || ack.result.length === 0) {
+    return {
+      type: 'success',
+      threadId,
+      imported: 0,
+    };
+  }
+  const decrypted = decryptRawPayload(ack.result, machine.dataEncryptionKey, credentials, '终端密钥不可用');
+  return normalizeCodexThreadSyncResult(decrypted);
 }
 
 export async function listMachineDirectories(
@@ -773,6 +831,18 @@ function normalizeCodexThreadSummary(value: Object): CodexThreadSummary {
     cliVersion: readString(record, 'cliVersion'),
     createdAt: readNumber(record, 'createdAt'),
     updatedAt: readNumber(record, 'updatedAt'),
+  };
+}
+
+function normalizeCodexThreadSyncResult(value: Object): CodexThreadSyncResult {
+  const record = value as Record<string, Object>;
+  const type = readString(record, 'type');
+  const errorMessage = readString(record, 'errorMessage');
+  return {
+    type: type.length > 0 ? type : 'success',
+    threadId: readString(record, 'threadId'),
+    imported: readNumber(record, 'imported'),
+    errorMessage: errorMessage.length > 0 ? errorMessage : undefined,
   };
 }
 

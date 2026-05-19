@@ -5,6 +5,7 @@
   "description": "HarmonyOS ArkTS client skeleton for Happy",
   "type": "module",
   "scripts": {
+    "build:release": "scripts/sign-release-app.sh",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
